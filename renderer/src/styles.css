@@ -118,3 +118,6 @@ input:focus, select:focus, textarea:focus { border-color: #1686d0; }
 .update-banner span { color: #a4d0ee; }
 body.dragging .app { outline: 3px solid #007acc; outline-offset: -3px; }
 @media(max-width: 1050px) { .brand { flex-basis: 220px; }.content-layout { grid-template-columns: minmax(0,1fr) 205px; }.input-slot select { max-width: 110px; } }
+.image-regions{display:flex;flex-wrap:wrap;gap:8px;padding:12px;color:#b9b9b9;font-size:11px}.image-regions strong{width:100%;color:#f0f0f0}.image-regions span{padding:5px 8px;background:#292929;border-radius:4px}
+.diff-split{display:grid;grid-template-columns:1fr 1fr;min-width:0;min-height:0;flex:1}.diff-split section{min-width:0;overflow:auto;border-right:1px solid #343434}.diff-split section:last-child{border-right:0}.diff-split header{position:sticky;top:0;background:#252525;padding:8px 12px;color:#c9c9c9;font-size:11px;z-index:1}
+.change-preview{display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:7px 12px;background:#222;color:#ccc;font-size:11px;white-space:pre-wrap;overflow-wrap:anywhere}

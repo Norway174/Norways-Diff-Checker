@@ -75,7 +75,21 @@ async function describe(inputPath) {
   const stat = await fsp.stat(absolute);
   const ext = path.extname(absolute).slice(1).toLowerCase();
   let types = stat.isDirectory() ? ['folders'] : Object.entries(groups).filter(([,extensions]) => extensions.includes(ext)).map(([type]) => type);
-  if (ext === 'pdf') types.push('images');
+  if (!stat.isDirectory()) {
+    const file = await fsp.open(absolute, 'r');
+    const magic = Buffer.alloc(16);
+    try { await file.read(magic, 0, magic.length, 0); } finally { await file.close(); }
+    if (magic.subarray(0, 5).toString() === '%PDF-') types = ['documents', 'images'];
+    else if (magic.subarray(0, 8).equals(Buffer.from('89504e470d0a1a0a', 'hex')) || magic.subarray(0, 3).equals(Buffer.from('ffd8ff', 'hex')) || magic.subarray(0, 4).toString() === 'GIF8' || (magic.subarray(0, 4).toString() === 'RIFF' && magic.subarray(8, 12).toString() === 'WEBP') || magic.subarray(4, 12).toString().startsWith('ftypheic')) types = ['images'];
+    else if (magic.subarray(0, 4).toString() === 'PK\u0003\u0004') {
+      const JSZip = require('jszip');
+      const zip = await JSZip.loadAsync(await fsp.readFile(absolute)).catch(() => null);
+      if (zip?.file('word/document.xml')) types = ['documents'];
+      else if (zip?.file('ppt/presentation.xml')) types = ['documents'];
+      else if (zip?.file('xl/workbook.xml') || zip?.file('content.xml')) types = ['excel'];
+    }
+  }
+  if (types.includes('documents') && ext === 'pdf') types.push('images');
   if (['csv','tsv'].includes(ext)) types.push('text');
   if (ext === 'txt') types.push('excel');
   if (!types.length) throw new Error('Unsupported input: ' + path.basename(absolute));
@@ -156,6 +170,38 @@ ipcMain.handle('export:pdf', async (event, { title, lines }) => {
   });
   return result.filePath;
 });
+ipcMain.handle('export:docx', async (event, { title, chunks, tracked }) => {
+  const result = await dialog.showSaveDialog(BrowserWindow.fromWebContents(event.sender), {
+    defaultPath: title + (tracked ? '-tracked' : '-redline') + '.docx',
+    filters: [{ name: 'Word document', extensions: ['docx'] }]
+  });
+  if (result.canceled || !result.filePath) return null;
+  const { Document, Packer, Paragraph } = require('docx');
+  const JSZip = require('jszip');
+  const base = await Packer.toBuffer(new Document({ sections: [{ children: [new Paragraph('')] }] }));
+  const zip = await JSZip.loadAsync(base);
+  let xml = await zip.file('word/document.xml').async('string');
+  const escape = value => String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
+  let id = 1;
+  const paragraphs = chunks.flatMap(chunk => {
+    const lines = String(chunk.text).replace(/\n$/, '').split('\n');
+    return lines.map(line => {
+      const content = escape(line || ' ');
+      if (tracked && chunk.type !== 'same') {
+        const key = chunk.type === 'added' ? 'ins' : 'del';
+        const textKey = chunk.type === 'added' ? 't' : 'delText';
+        return '<w:p><w:' + key + ' w:id="' + id++ + '" w:author="Norways Diff Checker" w:date="' + new Date().toISOString() + '"><w:r><w:' + textKey + ' xml:space="preserve">' + content + '</w:' + textKey + '></w:r></w:' + key + '></w:p>';
+      }
+      const color = chunk.type === 'added' ? '008540' : chunk.type === 'removed' ? 'B00020' : '222222';
+      const decoration = chunk.type === 'removed' ? '<w:strike/>' : chunk.type === 'added' ? '<w:u w:val="single"/>' : '';
+      return '<w:p><w:r><w:rPr><w:color w:val="' + color + '"/>' + decoration + '</w:rPr><w:t xml:space="preserve">' + content + '</w:t></w:r></w:p>';
+    });
+  }).join('');
+  xml = xml.replace(/<w:body>[\s\S]*?(<w:sectPr[\s\S]*?<\/w:sectPr>)<\/w:body>/, '<w:body>' + paragraphs + '$1</w:body>');
+  zip.file('word/document.xml', xml);
+  await fsp.writeFile(result.filePath, await zip.generateAsync({ type: 'nodebuffer' }));
+  return result.filePath;
+});
 function launchInstaller(mode) {
   const file = path.join(home, 'program', 'NorwaysDiffCheckerInstaller.exe');
   if (!fs.existsSync(file)) return false;
@@ -170,6 +216,7 @@ ipcMain.handle('update:check', async () => {
   let marker = {};
   try { marker = JSON.parse(await fsp.readFile(path.join(dataDir, 'installed.json'), 'utf8')); } catch {}
   const installed = marker.sha;
+  if (!installed) return null;
   if (marker.source === 'github' && marker.githubRepo) {
     const https = require('node:https');
     const repo = marker.githubRepo;

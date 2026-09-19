@@ -13,8 +13,8 @@ const modes: { id: Mode; label: string; icon: string; hint: string }[] = [
 ];
 const defaults = (): Options => ({
   view: 'split', precision: 'smart', ignoreCase: false, ignoreWhitespace: false, ignoreRules: [],
-  wrap: true, hideUnchanged: false, threshold: 24, opacity: 50, flickerMs: 500, ocr: false, page: 1,
-  leftSheet: '', rightSheet: '', formulas: false, hideRows: false, hideColumns: false, dateOrder: 'none',
+  wrap: true, hideUnchanged: false, threshold: 24, minRegionSize: 1, opacity: 50, flickerMs: 500, ocr: false, page: 1,
+  leftSheet: '', rightSheet: '', formulas: false, alignRows: true, hideRows: false, hideColumns: false, dateOrder: 'none',
   sortColumn: '', exclusions: ['node_modules', '.git']
 });
 const newTab = (type: Mode, left: Input | null = null, right: Input | null = null, available: Input[] = []): CompareTab => ({
@@ -31,8 +31,8 @@ function humanError(error: unknown) { return error instanceof Error ? error.mess
 function IconButton({ name, title, onClick, className = '' }: { name: string; title: string; onClick: () => void; className?: string }) {
   return <button className={className} title={title} aria-label={title} onClick={onClick}><img src={'./icons/' + name + '.svg'} alt="" /></button>;
 }
-function Titlebar({ tabs, active, onSelect, onNew, onClose, onSettings, onSave, onAppClose }: {
-  tabs: CompareTab[]; active: string | null; onSelect: (id: string) => void; onNew: () => void; onClose: (id: string) => void;
+function Titlebar({ tabs, active, onSelect, onNew, onClose, onReorder, onSettings, onSave, onAppClose }: {
+  tabs: CompareTab[]; active: string | null; onSelect: (id: string) => void; onNew: () => void; onClose: (id: string) => void; onReorder: (from: string, to: string) => void;
   onSettings: () => void; onSave: () => void; onAppClose: () => void;
 }) {
   const [maximized, setMaximized] = useState(false);
@@ -43,7 +43,10 @@ function Titlebar({ tabs, active, onSelect, onNew, onClose, onSettings, onSave, 
   return <header className="titlebar">
     <div className="brand">NORWAYS DIFF CHECKER</div>
     <nav className="tabs" aria-label="Comparison tabs">
-      {tabs.map(tab => <div key={tab.id} className={'tab ' + (active === tab.id ? 'selected' : '')} onClick={() => onSelect(tab.id)}>
+      {tabs.map(tab => <div key={tab.id} draggable className={'tab ' + (active === tab.id ? 'selected' : '')} onClick={() => onSelect(tab.id)}
+        onDragStart={event => { event.dataTransfer.setData('application/x-norways-tab', tab.id); event.dataTransfer.effectAllowed = 'move'; }}
+        onDragOver={event => { if (event.dataTransfer.types.includes('application/x-norways-tab')) event.preventDefault(); }}
+        onDrop={event => { const from = event.dataTransfer.getData('application/x-norways-tab'); if (from) { event.preventDefault(); event.stopPropagation(); onReorder(from, tab.id); } }}>
         <span className="tab-symbol">{modes.find(mode => mode.id === tab.type)?.icon}</span><span className="tab-name">{tab.title}{tab.dirty ? ' •' : ''}</span>
         <button className="tab-close" title="Close tab" onClick={event => { event.stopPropagation(); onClose(tab.id); }}>×</button>
       </div>)}
@@ -109,22 +112,52 @@ function InputSlot({ side, input, available, type, onBrowse, onReplace, onDrop }
 function DiffText({ result, options }: { result: any; options: Options }) {
   if (!result?.chunks) return null;
   const chunks = options.hideUnchanged ? result.chunks.filter((item: any) => item.type !== 'same') : result.chunks;
-  return <div className={'diff-output ' + (options.wrap ? 'wrap' : '')}>{chunks.map((part: any, index: number) => <div key={index} className={'diff-chunk ' + part.type}>
+  const render = (items: any[]) => <div className={'diff-output ' + (options.wrap ? 'wrap' : '')}>{items.map((part: any, index: number) => <div key={index} className={'diff-chunk ' + part.type}>
     <span className="line-no">{part.type === 'added' ? '+' : part.type === 'removed' ? '−' : ' '}{part.type === 'added' ? part.rightLine : part.leftLine}</span><pre>{part.text || ' '}</pre>
   </div>)}</div>;
+  if (options.view === 'split') return <div className="diff-split"><section><header>Original</header>{render(chunks.filter((part: any) => part.type !== 'added'))}</section><section><header>Changed</header>{render(chunks.filter((part: any) => part.type !== 'removed'))}</section></div>;
+  return render(chunks);
 }
 function TextView({ tab, onText, onOption }: { tab: CompareTab; onText: (side: 'left' | 'right', text: string) => void; onOption: (patch: Partial<Options>) => void }) {
   const [left, setLeft] = useState(''), [right, setRight] = useState('');
+  const [selectedChange, setSelectedChange] = useState(0);
   useEffect(() => { if (tab.left) window.api.readText(tab.left).then(setLeft).catch(() => setLeft('')); else setLeft(''); }, [tab.left?.id]);
   useEffect(() => { if (tab.right) window.api.readText(tab.right).then(setRight).catch(() => setRight('')); else setRight(''); }, [tab.right?.id]);
+  const groups: { first: any; last: any; leftText: string; rightText: string }[] = [];
+  const chunks = tab.result?.chunks || [];
+  for (let index = 0; index < chunks.length;) {
+    if (chunks[index].type === 'same') { index++; continue; }
+    const first = chunks[index]; let leftText = '', rightText = '';
+    while (index < chunks.length && chunks[index].type !== 'same') {
+      if (chunks[index].type === 'removed') leftText += chunks[index].text;
+      if (chunks[index].type === 'added') rightText += chunks[index].text;
+      index++;
+    }
+    groups.push({ first, last: chunks[index - 1], leftText, rightText });
+  }
+  const selected = groups[Math.min(selectedChange, groups.length - 1)];
+  const canMerge = selected && !tab.options.ignoreCase && !tab.options.ignoreWhitespace && !tab.options.ignoreRules.length && !tab.busy;
+  function applyChange(side: 'left' | 'right') {
+    if (!canMerge) return;
+    const start = side === 'left' ? selected.first.leftOffset : selected.first.rightOffset;
+    const end = side === 'left' ? selected.last.leftOffset + (selected.last.type === 'added' ? 0 : selected.last.text.length) : selected.last.rightOffset + (selected.last.type === 'removed' ? 0 : selected.last.text.length);
+    const current = side === 'left' ? left : right;
+    const replacement = side === 'left' ? selected.rightText : selected.leftText;
+    const next = current.slice(0, start) + replacement + current.slice(end);
+    if (side === 'left') setLeft(next); else setRight(next);
+    onText(side, next);
+  }
   return <div className="mode-body">
     <div className="editors">
       <label><span>ORIGINAL TEXT</span><textarea spellCheck={false} value={left} onChange={event => { setLeft(event.target.value); onText('left', event.target.value); }} placeholder="Paste or type original text…" /></label>
       <label><span>CHANGED TEXT</span><textarea spellCheck={false} value={right} onChange={event => { setRight(event.target.value); onText('right', event.target.value); }} placeholder="Paste or type changed text…" /></label>
     </div>
     <div className="result-head"><strong>Changes</strong><span>{tab.result ? tab.result.count + ' changed blocks' : 'Add text on both sides to compare'}</span>
+      {!!groups.length && <><button onClick={() => setSelectedChange(value => Math.max(0, value - 1))}>Previous</button><span>{Math.min(selectedChange + 1, groups.length)} / {groups.length}</span><button onClick={() => setSelectedChange(value => Math.min(groups.length - 1, value + 1))}>Next</button>
+        <button disabled={!canMerge} onClick={() => applyChange('right')}>Accept original →</button><button disabled={!canMerge} onClick={() => applyChange('left')}>← Accept changed</button></>}
       <select value={tab.options.view} onChange={event => onOption({ view: event.target.value })}><option value="split">Side by side</option><option value="unified">Unified</option></select>
     </div>
+    {selected && <div className="change-preview"><span>Original: {selected.leftText.slice(0, 160) || '∅'}</span><span>Changed: {selected.rightText.slice(0, 160) || '∅'}</span></div>}
     <DiffText result={tab.result} options={tab.options} />
   </div>;
 }
@@ -141,13 +174,15 @@ function ImageView({ tab }: { tab: CompareTab }) {
   if (view === 'details') return <div className="details-grid"><pre>{JSON.stringify(result.leftExif, null, 2)}</pre><pre>{JSON.stringify(result.rightExif, null, 2)}</pre></div>;
   if (view === 'ocr' || view === 'rich-ocr') return <div className="details-grid"><pre>{result.leftOcr || 'Enable OCR in Options, then compare.'}</pre><pre>{result.rightOcr || 'Enable OCR in Options, then compare.'}</pre></div>;
   if (view === 'split') return <div className="image-split"><img src={result.leftData} /><img src={result.rightData} /></div>;
-  return <div className="image-stage">
+  return <><div className="image-stage">
     <img className="image-base" src={view === 'flicker' && flicker ? result.rightData : result.leftData} />
     {view === 'slider' && <img className="image-overlay" src={result.rightData} style={{ clipPath: 'inset(0 ' + (100 - tab.options.opacity) + '% 0 0)' }} />}
     {view === 'fade' && <img className="image-overlay" src={result.rightData} style={{ opacity: tab.options.opacity / 100 }} />}
     {view === 'subtract' && <img className="image-overlay" src={result.diffData} />}
     {view === 'highlight' && <img className="image-overlay" src={result.diffData} />}
-  </div>;
+  </div><div className="image-regions"><strong>{result.regions?.length || 0} changed regions · {result.changed} pixels</strong>
+    {(result.regions || []).slice(0, 200).map((region: any, index: number) => <span key={index}>#{index + 1} · ({region.x}, {region.y}) · {region.width} × {region.height} · {region.pixels} pixels</span>)}
+  </div></>;
 }
 function ExcelView({ tab, onOption }: { tab: CompareTab; onOption: (patch: Partial<Options>) => void }) {
   const result = tab.result;
@@ -159,7 +194,7 @@ function ExcelView({ tab, onOption }: { tab: CompareTab; onOption: (patch: Parti
   const cols = Array.from({ length: colCount }, (_, i) => i).filter(col => !tab.options.hideColumns || [...changed].some(value => value.endsWith(':' + col)));
   const grid = (which: 'left' | 'right') => <div className="sheet-grid"><table><tbody>
     <tr><th></th>{cols.map(col => <th key={col}>{XLSX.utils.encode_col(col)}</th>)}</tr>
-    {rows.slice(0, 1000).map(row => <tr key={row}><th>{row + 1}</th>{cols.map(col => <td key={col} className={changed.has(row + ':' + col) ? which === 'left' ? 'removed' : 'added' : ''}>{result[which + 'Rows'][row]?.[col]?.display ?? ''}</td>)}</tr>)}
+    {rows.slice(0, 1000).map(row => <tr key={row}><th>{result.rowPositions?.length ? result.rowPositions[row]?.[which] ?? '—' : row + 1}</th>{cols.map(col => <td key={col} className={changed.has(row + ':' + col) ? which === 'left' ? 'removed' : 'added' : ''}>{result[which + 'Rows'][row]?.[col]?.display ?? ''}</td>)}</tr>)}
   </tbody></table></div>;
   return <div className="excel-view">
     <div className="sheet-selectors"><label>Original sheet <select value={result.leftName} onChange={event => onOption({ leftSheet: event.target.value })}>{result.leftSheets.map((name: string) => <option key={name}>{name}</option>)}</select></label>
@@ -190,18 +225,23 @@ function OptionsPanel({ tab, change }: { tab: CompareTab; change: (patch: Partia
       <label>View<select value={o.view} onChange={event => change({ view: event.target.value })}>{['split','slider','fade','flicker','subtract','highlight','ocr','rich-ocr','details'].map(view => <option key={view} value={view}>{view}</option>)}</select></label>
       <label>Reveal / opacity<input type="range" min="0" max="100" value={o.opacity} onChange={event => change({ opacity: Number(event.target.value) })} /></label>
       <label>Pixel threshold<input type="number" min="0" max="255" value={o.threshold} onChange={event => change({ threshold: Number(event.target.value) })} /></label>
+      <label>Minimum region size<input type="number" min="1" value={o.minRegionSize} onChange={event => change({ minRegionSize: Number(event.target.value) })} /></label>
       {toggle('ocr')}
+      {(tab.left?.name.toLowerCase().endsWith('.pdf') || tab.right?.name.toLowerCase().endsWith('.pdf')) && <><label>PDF page<input type="number" min="1" value={o.page} onChange={event => change({ page: Number(event.target.value) })} /></label><label>PDF password<input type="password" value={o.password || ''} onChange={event => change({ password: event.target.value })} /></label></>}
     </>}
-    {tab.type === 'excel' && <>{toggle('formulas')}{toggle('ignoreCase')}{toggle('ignoreWhitespace')}{toggle('hideRows')}{toggle('hideColumns')}
+    {tab.type === 'excel' && <>{toggle('formulas')}{toggle('alignRows')}{toggle('ignoreCase')}{toggle('ignoreWhitespace')}{toggle('hideRows')}{toggle('hideColumns')}
       <label>Date order<select value={o.dateOrder} onChange={event => change({ dateOrder: event.target.value as Options['dateOrder'] })}><option value="none">None</option><option>US</option><option>EU</option></select></label>
     </>}
     {tab.type === 'folders' && <label>Exclude paths<textarea value={o.exclusions.join('\n')} onChange={event => change({ exclusions: event.target.value.split('\n').filter(Boolean) })} /></label>}
-    {tab.type === 'documents' && <label>View<select value={o.view} onChange={event => change({ view: event.target.value })}>{['split','rich','plain','image','ocr','redline'].map(view => <option key={view}>{view}</option>)}</select></label>}
+    {tab.type === 'documents' && <><label>View<select value={o.view} onChange={event => change({ view: event.target.value })}>{['split','rich','plain','image','ocr','redline'].map(view => <option key={view}>{view}</option>)}</select></label>{toggle('ocr')}
+      {(tab.left?.name.toLowerCase().endsWith('.pdf') || tab.right?.name.toLowerCase().endsWith('.pdf')) && <label>PDF password<input type="password" value={o.password || ''} onChange={event => change({ password: event.target.value })} /></label>}</>}
   </aside>;
 }
 function App() {
   const [tabs, setTabs] = useState<CompareTab[]>([]);
   const tabsRef = useRef<CompareTab[]>([]);
+  const compareTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+  const projectId = useRef<string | null>(null);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [welcome, setWelcome] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -218,6 +258,7 @@ function App() {
       if (value.restoreTabs && value.tabs?.length) {
         const restored = value.tabs.map(tab => ({ ...tab, result: null, busy: false, progress: 0, options: { ...defaults(), ...tab.options } }));
         commitTabs(restored); setActiveId(restored[0].id);
+        restored.filter(tab => tab.left && tab.right).forEach(tab => void run(tab));
       } else setWelcome(true);
     });
     return window.api.onCompareEvent((event: CompareEvent) => {
@@ -247,18 +288,25 @@ function App() {
       patchTab(tab.id, { jobId });
     } catch (error) { patchTab(tab.id, { busy: false, error: humanError(error) }); }
   }
+  function schedule(tab: CompareTab) {
+    const pending = compareTimers.current.get(tab.id);
+    if (pending) clearTimeout(pending);
+    compareTimers.current.set(tab.id, setTimeout(() => {
+      compareTimers.current.delete(tab.id);
+      void run(tab);
+    }, 300));
+  }
   function setInput(tab: CompareTab, side: 'left' | 'right', input: Input) {
     if (!input.types.includes(tab.type)) { setNotice('Unable to compare ' + input.name + ' as ' + tab.type + '.'); return; }
     const old = tab[side];
-    const next = { ...tab, [side]: input, available: [...tab.available.filter(item => item.id !== input.id), ...(old ? [old] : [])], result: null, dirty: true };
-    patchTab(tab.id, next); void run(next);
+    const next = { ...tab, [side]: input, available: [...tab.available.filter(item => item.id !== input.id), ...(old && old.id !== input.id ? [old] : [])], result: null, dirty: true };
+    patchTab(tab.id, next);
+    if (tab.type === 'text') schedule(next); else void run(next);
   }
   function changeOptions(tab: CompareTab, patch: Partial<Options>) {
     const next = { ...tab, options: { ...tab.options, ...patch }, dirty: true };
     patchTab(tab.id, next);
-    if (tab.left && tab.right && !['view','opacity','wrap','hideUnchanged','hideRows','hideColumns'].every(key => !(key in patch))) {
-      if (!Object.keys(patch).every(key => ['view','opacity','wrap','hideUnchanged','hideRows','hideColumns'].includes(key))) void run(next);
-    } else if (tab.left && tab.right && Object.keys(patch).some(key => !['view','opacity','wrap','hideUnchanged','hideRows','hideColumns'].includes(key))) void run(next);
+    if (tab.left && tab.right && Object.keys(patch).some(key => !['view','opacity','wrap','hideUnchanged','hideRows','hideColumns'].includes(key))) schedule(next);
   }
   function addTab(type: Mode, left: Input | null = null, right: Input | null = null, available: Input[] = []) {
     const tab = newTab(type, left, right, available); commitTabs([...tabsRef.current, tab]); setActiveId(tab.id); setWelcome(false);
@@ -291,26 +339,33 @@ function App() {
   function closeTab(id: string) {
     const tab = tabsRef.current.find(item => item.id === id);
     if (tab?.dirty && !window.confirm('Close this comparison without saving it?')) return;
+    const pending = compareTimers.current.get(id);
+    if (pending) clearTimeout(pending);
+    compareTimers.current.delete(id);
     const next = tabsRef.current.filter(item => item.id !== id); commitTabs(next);
     if (activeId === id) setActiveId(next.at(-1)?.id || null);
     if (!next.length) setWelcome(true);
   }
-  async function save() {
+  async function save(): Promise<boolean> {
     try {
-      const project = await window.api.saveProject({ name: active?.title || 'Comparisons', tabs: tabsRef.current });
+      const project = await window.api.saveProject({ id: projectId.current || undefined, name: active?.title || 'Comparisons', tabs: tabsRef.current });
+      projectId.current = project.id;
       commitTabs(tabsRef.current.map(tab => ({ ...tab, dirty: false })));
       const next = await window.api.getSettings(); setPrefs(next); setNotice('Saved to ' + project.path);
-    } catch (error) { setNotice(humanError(error)); }
+      return true;
+    } catch (error) { setNotice(humanError(error)); return false; }
   }
   async function load(file: string) {
-    try { const project = await window.api.loadProject(file); commitTabs(project.tabs.map(tab => ({ ...tab, result: null, busy: false, options: { ...defaults(), ...tab.options } }))); setActiveId(project.tabs[0]?.id || null); setWelcome(false); }
+    try { const project = await window.api.loadProject(file); projectId.current = project.id; const loaded = project.tabs.map(tab => ({ ...tab, result: null, busy: false, options: { ...defaults(), ...tab.options } })); commitTabs(loaded); setActiveId(loaded[0]?.id || null); setWelcome(false); loaded.filter(tab => tab.left && tab.right).forEach(tab => void run(tab)); }
     catch (error) { setNotice(humanError(error)); }
   }
-  async function exportResult(tab: CompareTab) {
+  async function exportResult(tab: CompareTab, format: string) {
     if (!tab.result) return;
     try {
-      if (tab.type === 'images') await window.api.saveExport({ name: tab.title + '.png', content: tab.result.diffData.split(',')[1], base64: true, filters: [{ name: 'PNG', extensions: ['png'] }] });
-      else if (tab.type === 'excel') {
+      if (format === 'png') await window.api.saveExport({ name: tab.title + '.png', content: tab.result.diffData.split(',')[1], base64: true, filters: [{ name: 'PNG', extensions: ['png'] }] });
+      else if (format === 'text') await window.api.saveExport({ name: tab.title + '.txt', content: tab.result.rightText || '', filters: [{ name: 'Text', extensions: ['txt'] }] });
+      else if (format === 'docx' || format === 'tracked') await window.api.exportDocx({ title: tab.title, chunks: tab.result.chunks || [], tracked: format === 'tracked' });
+      else if (format === 'xlsx') {
         const rows = tab.result.changed.map((item: any) => ({ Cell: XLSX.utils.encode_cell({ r: item.row, c: item.col }), Original: item.left, Changed: item.right, OriginalFormula: item.leftFormula, ChangedFormula: item.rightFormula }));
         const book = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(book, XLSX.utils.json_to_sheet(rows), 'Changes');
         const buffer = XLSX.write(book, { type: 'base64', bookType: 'xlsx' });
@@ -326,13 +381,22 @@ function App() {
     if (tabsRef.current.some(tab => tab.dirty) && !window.confirm('Close Norways Diff Checker with unsaved comparisons?')) return;
     void window.api.closeWindow();
   }
-  return <div className="app" onDragOver={event => { event.preventDefault(); document.body.classList.add('dragging'); }} onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node)) document.body.classList.remove('dragging'); }} onDrop={event => void fromDrop(event)}>
-    <Titlebar tabs={tabs} active={activeId} onSelect={setActiveId} onNew={() => setWelcome(true)} onClose={closeTab} onSettings={() => setSettingsOpen(true)} onSave={() => void save()} onAppClose={appClose} />
+  return <div className="app" onDragOver={event => { if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); document.body.classList.add('dragging'); } }} onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node)) document.body.classList.remove('dragging'); }} onDrop={event => { if (event.dataTransfer.types.includes('Files')) void fromDrop(event); }}>
+    <Titlebar tabs={tabs} active={activeId} onSelect={setActiveId} onNew={() => setWelcome(true)} onClose={closeTab}
+      onReorder={(from, to) => { const next = [...tabsRef.current]; const fromIndex = next.findIndex(tab => tab.id === from), toIndex = next.findIndex(tab => tab.id === to); if (fromIndex >= 0 && toIndex >= 0 && fromIndex !== toIndex) { next.splice(toIndex, 0, next.splice(fromIndex, 1)[0]); commitTabs(next); } }}
+      onSettings={() => setSettingsOpen(true)} onSave={() => void save()} onAppClose={appClose} />
     {active ? <main className="workspace">
       <div className="workspace-top"><div><span className="small-caps">{active.type.toUpperCase()} COMPARISON</span><input className="tab-title-edit" value={active.title} onChange={event => patchTab(active.id, { title: event.target.value, dirty: true })} /></div>
         <div className="workspace-actions"><span className="change-count">{active.result?.count ?? 0} changes</span>
           {active.busy ? <button onClick={() => { if (active.jobId) void window.api.cancelCompare(active.jobId); patchTab(active.id, { busy: false }); }}>Cancel · {active.progress}%</button> : <button onClick={() => void run(active)}>Compare</button>}
-          <button onClick={() => void exportResult(active)} disabled={!active.result}>Export</button></div></div>
+          <select aria-label="Export comparison" value="" disabled={!active.result} onChange={event => { if (event.target.value) void exportResult(active, event.target.value); }}>
+            <option value="">Export…</option>
+            {active.type === 'images' && <option value="png">PNG difference</option>}
+            {active.type === 'text' && <option value="text">Changed text</option>}
+            {active.type === 'documents' && <><option value="docx">Word redline</option><option value="tracked">Word tracked changes</option></>}
+            {active.type === 'excel' && <option value="xlsx">Excel change list</option>}
+            <option value="pdf">PDF report</option>
+          </select></div></div>
       <div className="input-row"><InputSlot side="left" input={active.left} available={active.available} type={active.type} onBrowse={() => void browse(active, 'left')} onReplace={input => setInput(active, 'left', input)} onDrop={event => void fromDrop(event, 'left')} />
         <button className="swap" title="Swap sides" onClick={() => { const next = { ...active, left: active.right, right: active.left, dirty: true }; patchTab(active.id, next); void run(next); }}>⇄</button>
         <InputSlot side="right" input={active.right} available={active.available} type={active.type} onBrowse={() => void browse(active, 'right')} onReplace={input => setInput(active, 'right', input)} onDrop={event => void fromDrop(event, 'right')} /></div>
@@ -352,7 +416,7 @@ function App() {
       <label className="check"><input type="checkbox" checked={prefs.restoreTabs} onChange={async event => setPrefs(await window.api.setSettings({ restoreTabs: event.target.checked }))} />Restore previous tabs on startup</label>
       <p>Comparisons and settings are saved locally on this computer.</p><footer><button className="primary" onClick={() => setSettingsOpen(false)}>Done</button></footer>
     </div></div>}
-    {update && <div className="update-banner"><strong>Update available</strong><span>Commit {update.sha.slice(0, 8)}</span><button onClick={async () => { await save(); if (!await window.api.updateNow()) setNotice('Installer is not installed yet.'); }}>Update now</button>
+    {update && <div className="update-banner"><strong>Update available</strong><span>Commit {update.sha.slice(0, 8)}</span><button onClick={async () => { if (await save() && !await window.api.updateNow()) setNotice('Installer is not installed yet.'); }}>Update now</button>
       <button onClick={async () => { await window.api.updateAfterClose(); setUpdate(null); setNotice('Update will run after the app closes.'); }}>After I close</button>
       <button onClick={() => setUpdate(null)}>Ignore</button><button onClick={async () => { setPrefs(await window.api.setSettings({ skippedCommit: update.sha })); setUpdate(null); }}>Ignore &amp; Skip</button></div>}
     {notice && <div className="toast" role="alert">{notice}<button onClick={() => setNotice('')}>×</button></div>}

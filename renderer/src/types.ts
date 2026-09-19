@@ -10,6 +10,7 @@ export type Options = {
   wrap: boolean;
   hideUnchanged: boolean;
   threshold: number;
+  minRegionSize: number;
   opacity: number;
   flickerMs: number;
   ocr: boolean;
@@ -17,6 +18,7 @@ export type Options = {
   leftSheet: string;
   rightSheet: string;
   formulas: boolean;
+  alignRows: boolean;
   hideRows: boolean;
   hideColumns: boolean;
   dateOrder: 'none' | 'US' | 'EU';
@@ -58,6 +60,7 @@ export type AppApi = {
   loadProject(path: string): Promise<{ id: string; name: string; tabs: CompareTab[] }>;
   saveExport(request: { name: string; content: string; base64?: boolean; filters: { name: string; extensions: string[] }[] }): Promise<string | null>;
   exportPdf(request: { title: string; lines: string[] }): Promise<string | null>;
+  exportDocx(request: { title: string; chunks: any[]; tracked: boolean }): Promise<string | null>;
   checkUpdate(): Promise<{ sha: string; installed: string | null } | null>;
   updateNow(): Promise<boolean>; updateAfterClose(): Promise<boolean>;
 };

@@ -55,7 +55,12 @@ try {
   $expectedSha = '970ecc121a16f546174b6a870215ca4cc0de33f8a616b42c16c8c02e66b07d05'
   Log 'Downloading pinned Node build runtime'
   Invoke-WebRequest -Uri "https://nodejs.org/dist/$nodeVersion/$nodeZipName" -OutFile $nodeZip
-  if ((Get-FileHash -LiteralPath $nodeZip -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expectedSha) { throw 'Node runtime hash mismatch.' }
+  $stream = [IO.File]::OpenRead($nodeZip)
+  try {
+    $hasher = [Security.Cryptography.SHA256]::Create()
+    $actualSha = ([BitConverter]::ToString($hasher.ComputeHash($stream))).Replace('-','').ToLowerInvariant()
+  } finally { $stream.Dispose() }
+  if ($actualSha -ne $expectedSha) { throw 'Node runtime hash mismatch.' }
   Expand-Archive -LiteralPath $nodeZip -DestinationPath (Join-Path $work 'node')
   $nodeDir = Join-Path $work "node\node-$nodeVersion-win-x64"
   $env:PATH = $nodeDir + ';' + $env:PATH
@@ -72,6 +77,11 @@ try {
   } finally { Pop-Location }
   $built = Join-Path $sourceRoot 'dist\win-unpacked'
   if (!(Test-Path -LiteralPath (Join-Path $built 'Norways Diff Checker.exe'))) { throw 'Built executable is missing.' }
+  $asar = Join-Path $built 'resources\app.asar'
+  if (!(Test-Path -LiteralPath $asar) -or (Get-Item -LiteralPath $asar).Length -lt 1000000) { throw 'Packaged application archive is missing or incomplete.' }
+  $native = Join-Path $built 'resources\app.asar.unpacked\node_modules'
+  if (!(Get-ChildItem -LiteralPath (Join-Path $native '@img\sharp-win32-x64\lib') -Filter '*.node' -ErrorAction SilentlyContinue)) { throw 'Sharp native engine is missing.' }
+  if (!(Get-ChildItem -LiteralPath (Join-Path $native '@napi-rs\canvas-win32-x64-msvc') -Filter '*.node' -ErrorAction SilentlyContinue)) { throw 'Canvas native engine is missing.' }
   $staged = Join-Path $work 'program-new'
   Copy-Item -LiteralPath $built -Destination $staged -Recurse
   Copy-Item -LiteralPath $InstallerPath -Destination (Join-Path $staged 'NorwaysDiffCheckerInstaller.exe')

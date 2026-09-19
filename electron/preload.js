@@ -28,6 +28,7 @@ contextBridge.exposeInMainWorld('api', {
   loadProject: call('project:load'),
   saveExport: call('export:save'),
   exportPdf: call('export:pdf'),
+  exportDocx: call('export:docx'),
   checkUpdate: call('update:check'),
   updateNow: call('update:now'),
   updateAfterClose: call('update:defer')

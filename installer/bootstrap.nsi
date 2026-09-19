@@ -4,6 +4,7 @@ Name "Norways Diff Checker"
 OutFile "..\dist\NorwaysDiffCheckerInstaller.exe"
 InstallDir "$LOCALAPPDATA\NorwaysDiffChecker\program"
 ShowInstDetails show
+AutoCloseWindow true
 !include "LogicLib.nsh"
 !include "FileFunc.nsh"
 !ifndef SOURCE_CONFIG
