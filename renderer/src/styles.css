@@ -114,8 +114,6 @@ input:focus, select:focus, textarea:focus { border-color: #1686d0; }
 .settings-modal { width: min(520px, calc(100vw - 50px)); }
 .toast { position: fixed; z-index: 40; left: 14px; bottom: 14px; max-width: 680px; padding: 12px 16px; background: #642929; border-left: 3px solid #f16d6d; box-shadow: 0 8px 25px #0009; }
 .toast button { margin-left: 15px; border: 0; background: transparent; }
-.update-banner { position: fixed; z-index: 15; right: 14px; bottom: 14px; display: flex; align-items: center; gap: 8px; padding: 12px; background: #143d5c; border: 1px solid #3981b6; box-shadow: 0 7px 20px #0009; }
-.update-banner span { color: #a4d0ee; }
 body.dragging .app { outline: 3px solid #007acc; outline-offset: -3px; }
 @media(max-width: 1050px) { .brand { flex-basis: 220px; }.content-layout { grid-template-columns: minmax(0,1fr) 205px; }.input-slot select { max-width: 110px; } }
 .image-regions{display:flex;flex-wrap:wrap;gap:8px;padding:12px;color:#b9b9b9;font-size:11px}.image-regions strong{width:100%;color:#f0f0f0}.image-regions span{padding:5px 8px;background:#292929;border-radius:4px}

@@ -4,19 +4,50 @@ const fsp = require('node:fs/promises');
 const path = require('node:path');
 const { Worker } = require('node:worker_threads');
 const { randomUUID } = require('node:crypto');
-const { spawn } = require('node:child_process');
 
-const home = path.join(process.env.LOCALAPPDATA || app.getPath('appData'), 'NorwaysDiffChecker');
-const dataDir = path.join(home, 'settings');
-fs.mkdirSync(dataDir, { recursive: true });
-fs.mkdirSync(path.join(dataDir, 'electron'), { recursive: true });
-fs.mkdirSync(path.join(dataDir, 'cache'), { recursive: true });
-app.setPath('userData', path.join(dataDir, 'electron'));
-app.setPath('sessionData', path.join(dataDir, 'cache'));
+const localAppData = process.env.LOCALAPPDATA || path.join(path.dirname(app.getPath('appData')), 'Local');
+const dataDir = path.join(localAppData, 'NorwaysDiffChecker');
+const legacyDir = path.join(dataDir, 'settings');
 const preferencesPath = path.join(dataDir, 'preferences.json');
+const migrationMarker = path.join(dataDir, '.settings-migrated');
+fs.mkdirSync(dataDir, { recursive: true });
+if (fs.existsSync(legacyDir) && !fs.existsSync(migrationMarker)) {
+  try {
+    const oldProjects = path.join(legacyDir, 'projects');
+    const newProjects = path.join(dataDir, 'projects');
+    const legacyPreferences = path.join(legacyDir, 'preferences.json');
+    const copiedPreferences = !fs.existsSync(preferencesPath) && fs.existsSync(legacyPreferences);
+    if (copiedPreferences) fs.copyFileSync(legacyPreferences, preferencesPath);
+    const remapPath = value => {
+      const oldPrefix = oldProjects + path.sep;
+      return typeof value === 'string' && value.toLowerCase().startsWith(oldPrefix.toLowerCase())
+        ? path.join(newProjects, value.slice(oldPrefix.length)) : value;
+    };
+    if (fs.existsSync(oldProjects)) {
+      fs.cpSync(oldProjects, newProjects, { recursive: true, force: false, errorOnExist: false });
+      for (const entry of fs.readdirSync(newProjects, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        const projectFile = path.join(newProjects, entry.name, 'project.json');
+        if (!fs.existsSync(projectFile)) continue;
+        const project = JSON.parse(fs.readFileSync(projectFile, 'utf8'));
+        for (const tab of project.tabs || []) for (const input of [tab.left, tab.right, ...(tab.available || [])]) if (input?.path) input.path = remapPath(input.path);
+        fs.writeFileSync(projectFile, JSON.stringify(project, null, 2));
+      }
+    }
+    if (copiedPreferences && fs.existsSync(oldProjects)) {
+      const migrated = JSON.parse(fs.readFileSync(preferencesPath, 'utf8'));
+      migrated.recentProjects = (migrated.recentProjects || []).map(item => ({ ...item, path: remapPath(item.path) }));
+      for (const tab of migrated.tabs || []) for (const input of [tab.left, tab.right, ...(tab.available || [])]) if (input?.path) input.path = remapPath(input.path);
+      fs.writeFileSync(preferencesPath, JSON.stringify(migrated, null, 2));
+    }
+    fs.writeFileSync(migrationMarker, new Date().toISOString());
+  } catch (error) { console.error('Unable to migrate previous settings:', error); }
+}
+fs.mkdirSync(path.join(dataDir, 'cache'), { recursive: true });
+app.setPath('userData', dataDir);
+app.setPath('sessionData', path.join(dataDir, 'cache'));
 let mainWindow;
 const jobs = new Map();
-let deferredUpdate = false;
 const externalPaths = argv => argv.slice(1).filter(value => !value.startsWith('-') && fs.existsSync(value) && path.resolve(value) !== path.resolve(app.getAppPath())).map(value => path.resolve(value));
 let pendingOpenPaths = externalPaths(process.argv);
 const firstInstance = app.requestSingleInstanceLock();
@@ -28,7 +59,7 @@ app.on('second-instance', (_event, argv) => {
     if (!mainWindow.webContents.isLoading() && pendingOpenPaths.length) mainWindow.webContents.send('inputs:open-paths', pendingOpenPaths.splice(0));
   }
 });
-const defaults = { restoreTabs: false, skippedCommit: null, recentProjects: [] };
+const defaults = { restoreTabs: false, recentProjects: [] };
 function settings() { try { return { ...defaults, ...JSON.parse(fs.readFileSync(preferencesPath, 'utf8')) }; } catch { return defaults; } }
 function saveSettings(value) {
   const tmp = preferencesPath + '.tmp';
@@ -62,7 +93,6 @@ if (firstInstance) app.whenReady().then(() => {
   app.on('activate', () => { if (!BrowserWindow.getAllWindows().length) createWindow(); });
 });
 app.on('window-all-closed', () => {
-  if (deferredUpdate) launchInstaller('-update-silent');
   if (process.platform !== 'darwin') app.quit();
 });
 ipcMain.handle('window:minimize', event => BrowserWindow.fromWebContents(event.sender)?.minimize());
@@ -204,42 +234,4 @@ ipcMain.handle('export:docx', async (event, { title, chunks, tracked }) => {
   if (result.canceled || !result.filePath) return null;
   await fsp.writeFile(result.filePath, await require('./exporters').docxFromChunks(chunks, tracked));
   return result.filePath;
-});
-function launchInstaller(mode) {
-  const file = path.join(home, 'NorwaysDiffCheckerInstaller.bat');
-  if (!fs.existsSync(file) || !fs.existsSync(path.join(home, 'engine.ps1'))) return false;
-  spawn(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', `""${file}" ${mode}"`], {
-    detached: true, stdio: 'ignore', windowsHide: false, windowsVerbatimArguments: true
-  }).unref();
-  return true;
-}
-ipcMain.handle('update:defer', () => { deferredUpdate = true; return true; });
-ipcMain.handle('update:now', () => { if (!launchInstaller('-update')) return false; mainWindow?.close(); return true; });
-ipcMain.handle('update:check', async () => {
-  let marker = {};
-  try { marker = JSON.parse(await fsp.readFile(path.join(dataDir, 'installed.json'), 'utf8')); } catch {}
-  const installed = marker.sha;
-  if (!installed) return null;
-  if (marker.source === 'github' && marker.githubRepo) {
-    const https = require('node:https');
-    const repo = marker.githubRepo;
-    const branch = marker.branch || 'main';
-    const sha = await new Promise(resolve => {
-      https.get('https://api.github.com/repos/' + repo + '/branches/' + branch, { headers: { 'User-Agent': 'NorwaysDiffChecker' } }, response => {
-        let body = '';
-        response.on('data', chunk => body += chunk);
-        response.on('end', () => { try { resolve(JSON.parse(body).commit.sha); } catch { resolve(null); } });
-      }).on('error', () => resolve(null));
-    });
-    return sha && sha !== installed ? { sha, installed } : null;
-  }
-  const local = 'D:\\NodeJS\\Norways Diff Checker';
-  const sha = await new Promise(resolve => {
-    const child = spawn('git', ['-C', local, 'rev-parse', 'HEAD'], { windowsHide: true });
-    let out = '';
-    child.stdout.on('data', value => out += value);
-    child.on('error', () => resolve(null));
-    child.on('close', code => resolve(code === 0 ? out.trim() : null));
-  });
-  return sha && sha !== installed ? { sha, installed } : null;
 });

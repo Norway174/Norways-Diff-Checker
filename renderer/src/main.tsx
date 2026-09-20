@@ -408,10 +408,9 @@ function App() {
   const activeIdRef = useRef<string | null>(null);
   const [welcome, setWelcome] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [prefs, setPrefs] = useState<Preferences>({ restoreTabs: false, skippedCommit: null, recentProjects: [] });
+  const [prefs, setPrefs] = useState<Preferences>({ restoreTabs: false, recentProjects: [] });
   const [pairing, setPairing] = useState<{ inputs: Input[]; type: Mode } | null>(null);
   const [notice, setNotice] = useState('');
-  const [update, setUpdate] = useState<{ sha: string; installed: string | null } | null>(null);
   const active = tabs.find(tab => tab.id === activeId) || null;
   useEffect(() => { activeIdRef.current = activeId; }, [activeId]);
   function invalidDrop(message: string) {
@@ -457,10 +456,6 @@ function App() {
     }, 600);
     return () => clearTimeout(timer);
   }, [tabs, prefs.restoreTabs]);
-  useEffect(() => {
-    const timer = setTimeout(() => window.api.checkUpdate().then(value => { if (value && value.sha !== prefs.skippedCommit) setUpdate(value); }).catch(() => {}), 2000);
-    return () => clearTimeout(timer);
-  }, [prefs.skippedCommit]);
   async function run(tab: CompareTab) {
     if (!tab.left || !tab.right) return;
     if (tab.jobId) await window.api.cancelCompare(tab.jobId);
@@ -613,11 +608,8 @@ function App() {
     {pairing && <Pairing inputs={pairing.inputs} type={pairing.type} onChangeType={type => setPairing({ ...pairing, type })} onCancel={() => setPairing(null)} onConfirm={(left, right, others, type) => { addTab(type, left, right, others); setPairing(null); }} />}
     {settingsOpen && <div className="modal-backdrop"><div className="settings-modal modal"><div className="small-caps">PREFERENCES</div><h2>Settings</h2>
       <label className="check"><input type="checkbox" checked={prefs.restoreTabs} onChange={async event => setPrefs(await window.api.setSettings({ restoreTabs: event.target.checked }))} />Restore previous tabs on startup</label>
-      <p>Comparisons and settings are saved locally on this computer.</p><footer><button className="primary" onClick={() => setSettingsOpen(false)}>Done</button></footer>
+      <p>Comparisons and settings are saved in <code>%LOCALAPPDATA%\NorwaysDiffChecker</code>.</p><footer><button className="primary" onClick={() => setSettingsOpen(false)}>Done</button></footer>
     </div></div>}
-    {update && <div className="update-banner"><strong>Update available</strong><span>Commit {update.sha.slice(0, 8)}</span><button onClick={async () => { if (await save() && !await window.api.updateNow()) setNotice('Installer is not installed yet.'); }}>Update now</button>
-      <button onClick={async () => { await window.api.updateAfterClose(); setUpdate(null); setNotice('Update will run after the app closes.'); }}>After I close</button>
-      <button onClick={() => setUpdate(null)}>Ignore</button><button onClick={async () => { setPrefs(await window.api.setSettings({ skippedCommit: update.sha })); setUpdate(null); }}>Ignore &amp; Skip</button></div>}
     {notice && <div className="toast" role="alert">{notice}<button onClick={() => setNotice('')}>×</button></div>}
   </div>;
 }

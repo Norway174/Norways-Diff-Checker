@@ -62,7 +62,7 @@ export type CompareTab = {
   scans?: { at: string; count: number; changed: number; options: Partial<Options> }[];
   decisions?: Record<number, 'accept' | 'reject'>;
 };
-export type Preferences = { restoreTabs: boolean; skippedCommit: string | null; recentProjects: { id: string; name: string; path: string }[]; tabs?: CompareTab[] };
+export type Preferences = { restoreTabs: boolean; recentProjects: { id: string; name: string; path: string }[]; tabs?: CompareTab[] };
 export type CompareEvent = { id: string; kind: 'progress' | 'result' | 'error'; value?: number; phase?: string; result?: any; error?: string };
 export type AppApi = {
   minimizeWindow(): Promise<void>; toggleMaximizeWindow(): Promise<boolean>; isWindowMaximized(): Promise<boolean>; closeWindow(): Promise<void>;
@@ -83,7 +83,5 @@ export type AppApi = {
   saveExport(request: { name: string; content: string; base64?: boolean; filters: { name: string; extensions: string[] }[] }): Promise<string | null>;
   exportPdf(request: { title: string; lines?: string[]; layout?: 'side' | 'redline'; leftText?: string; rightText?: string; chunks?: any[] }): Promise<string | null>;
   exportDocx(request: { title: string; chunks: any[]; tracked: boolean }): Promise<string | null>;
-  checkUpdate(): Promise<{ sha: string; installed: string | null } | null>;
-  updateNow(): Promise<boolean>; updateAfterClose(): Promise<boolean>;
 };
 declare global { interface Window { api: AppApi } }

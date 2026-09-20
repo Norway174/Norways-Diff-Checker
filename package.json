@@ -11,8 +11,7 @@
     "build:ui": "vite build",
     "check": "tsc --noEmit && node --check electron/main.js && node --check electron/preload.js && node --check electron/compare-worker.js && node --check electron/exporters.js",
     "test": "node --test tests/*.test.js",
-    "build:dir": "npm run build:ui && powershell -NoProfile -ExecutionPolicy Bypass -File scripts/ensure-libreoffice.ps1 && electron-builder --win dir",
-    "build:installer": "powershell -NoProfile -ExecutionPolicy Bypass -File installer/build-installer.ps1"
+    "build:dir": "npm run build:ui && powershell -NoProfile -ExecutionPolicy Bypass -File scripts/ensure-libreoffice.ps1 && electron-builder --win dir"
   },
   "devDependencies": {
     "@types/diff": "^7.0.2",
