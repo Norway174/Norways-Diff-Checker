@@ -15,7 +15,7 @@ There is no installer or in-app update mechanism. Installer design can resume wh
 
 ## App data
 
-The app creates `%LOCALAPPDATA%\NorwaysDiffChecker` on launch and uses it directly for `preferences.json`, `projects`, Electron user data, and `cache`. If data exists in the former `%LOCALAPPDATA%\NorwaysDiffChecker\settings` folder, the app copies preferences and saved projects into the new layout. The former folder is retained as a backup.
+The app creates `%LOCALAPPDATA%\NorwaysDiffChecker` on launch and uses it directly for `preferences.json`, `projects`, Electron user data, and `cache`.
 
 ## Comparison workspace
 

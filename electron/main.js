@@ -7,42 +7,8 @@ const { randomUUID } = require('node:crypto');
 
 const localAppData = process.env.LOCALAPPDATA || path.join(path.dirname(app.getPath('appData')), 'Local');
 const dataDir = path.join(localAppData, 'NorwaysDiffChecker');
-const legacyDir = path.join(dataDir, 'settings');
 const preferencesPath = path.join(dataDir, 'preferences.json');
-const migrationMarker = path.join(dataDir, '.settings-migrated');
 fs.mkdirSync(dataDir, { recursive: true });
-if (fs.existsSync(legacyDir) && !fs.existsSync(migrationMarker)) {
-  try {
-    const oldProjects = path.join(legacyDir, 'projects');
-    const newProjects = path.join(dataDir, 'projects');
-    const legacyPreferences = path.join(legacyDir, 'preferences.json');
-    const copiedPreferences = !fs.existsSync(preferencesPath) && fs.existsSync(legacyPreferences);
-    if (copiedPreferences) fs.copyFileSync(legacyPreferences, preferencesPath);
-    const remapPath = value => {
-      const oldPrefix = oldProjects + path.sep;
-      return typeof value === 'string' && value.toLowerCase().startsWith(oldPrefix.toLowerCase())
-        ? path.join(newProjects, value.slice(oldPrefix.length)) : value;
-    };
-    if (fs.existsSync(oldProjects)) {
-      fs.cpSync(oldProjects, newProjects, { recursive: true, force: false, errorOnExist: false });
-      for (const entry of fs.readdirSync(newProjects, { withFileTypes: true })) {
-        if (!entry.isDirectory()) continue;
-        const projectFile = path.join(newProjects, entry.name, 'project.json');
-        if (!fs.existsSync(projectFile)) continue;
-        const project = JSON.parse(fs.readFileSync(projectFile, 'utf8'));
-        for (const tab of project.tabs || []) for (const input of [tab.left, tab.right, ...(tab.available || [])]) if (input?.path) input.path = remapPath(input.path);
-        fs.writeFileSync(projectFile, JSON.stringify(project, null, 2));
-      }
-    }
-    if (copiedPreferences && fs.existsSync(oldProjects)) {
-      const migrated = JSON.parse(fs.readFileSync(preferencesPath, 'utf8'));
-      migrated.recentProjects = (migrated.recentProjects || []).map(item => ({ ...item, path: remapPath(item.path) }));
-      for (const tab of migrated.tabs || []) for (const input of [tab.left, tab.right, ...(tab.available || [])]) if (input?.path) input.path = remapPath(input.path);
-      fs.writeFileSync(preferencesPath, JSON.stringify(migrated, null, 2));
-    }
-    fs.writeFileSync(migrationMarker, new Date().toISOString());
-  } catch (error) { console.error('Unable to migrate previous settings:', error); }
-}
 fs.mkdirSync(path.join(dataDir, 'cache'), { recursive: true });
 app.setPath('userData', dataDir);
 app.setPath('sessionData', path.join(dataDir, 'cache'));
