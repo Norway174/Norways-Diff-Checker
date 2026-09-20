@@ -1,20 +1,7 @@
 $ErrorActionPreference = 'Stop'
-Set-Location (Split-Path -Parent $PSScriptRoot)
-$configPath = Join-Path (Get-Location) 'dist\installer-source.json'
-New-Item -ItemType Directory -Force -Path 'dist' | Out-Null
-$remote = (& git remote get-url origin 2>$null)
-$repo = $null
-if ($LASTEXITCODE -eq 0 -and $remote -match 'github\.com[:/]([^/]+/[^/.]+)(?:\.git)?$') { $repo = $Matches[1] }
-@{ localPath='D:\NodeJS\Norways Diff Checker'; githubRepo=$repo; branch='main' } | ConvertTo-Json | Set-Content -LiteralPath $configPath
-$compiler = Get-ChildItem -Path (Join-Path $env:LOCALAPPDATA 'electron-builder\Cache\nsis') -Recurse -Filter makensis.exe -ErrorAction SilentlyContinue |
-  Where-Object { $_.DirectoryName -notmatch '\\Bin$' } | Select-Object -First 1
-if (!$compiler) {
-  & npx electron-builder --win nsis
-  if ($LASTEXITCODE -ne 0) { throw 'Unable to obtain the NSIS compiler.' }
-  $compiler = Get-ChildItem -Path (Join-Path $env:LOCALAPPDATA 'electron-builder\Cache\nsis') -Recurse -Filter makensis.exe -ErrorAction SilentlyContinue |
-    Where-Object { $_.DirectoryName -notmatch '\\Bin$' } | Select-Object -First 1
-}
-if (!$compiler) { throw 'NSIS compiler is unavailable.' }
-& $compiler.FullName "/DSOURCE_CONFIG=$configPath" 'installer\bootstrap.nsi'
-if ($LASTEXITCODE -ne 0) { throw 'NSIS installer build failed.' }
-Write-Host 'Created dist\NorwaysDiffCheckerInstaller.exe'
+$root = Split-Path -Parent $PSScriptRoot
+$destination = Join-Path $root 'dist\installer'
+New-Item -ItemType Directory -Force -Path $destination | Out-Null
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'NorwaysDiffCheckerInstaller.bat') -Destination $destination -Force
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'engine.ps1') -Destination $destination -Force
+Write-Host "Installer scripts are ready in $destination"

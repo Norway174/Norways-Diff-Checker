@@ -17,6 +17,17 @@ const preferencesPath = path.join(dataDir, 'preferences.json');
 let mainWindow;
 const jobs = new Map();
 let deferredUpdate = false;
+const externalPaths = argv => argv.slice(1).filter(value => !value.startsWith('-') && fs.existsSync(value) && path.resolve(value) !== path.resolve(app.getAppPath())).map(value => path.resolve(value));
+let pendingOpenPaths = externalPaths(process.argv);
+const firstInstance = app.requestSingleInstanceLock();
+if (!firstInstance) app.quit();
+app.on('second-instance', (_event, argv) => {
+  pendingOpenPaths.push(...externalPaths(argv));
+  if (mainWindow) {
+    mainWindow.show(); mainWindow.focus();
+    if (!mainWindow.webContents.isLoading() && pendingOpenPaths.length) mainWindow.webContents.send('inputs:open-paths', pendingOpenPaths.splice(0));
+  }
+});
 const defaults = { restoreTabs: false, skippedCommit: null, recentProjects: [] };
 function settings() { try { return { ...defaults, ...JSON.parse(fs.readFileSync(preferencesPath, 'utf8')) }; } catch { return defaults; } }
 function saveSettings(value) {
@@ -46,7 +57,7 @@ function createWindow() {
   mainWindow.webContents.on('did-fail-load', (_event, code, description) => console.error('[renderer] load failure', code, description));
   mainWindow.loadFile(path.join(__dirname, '../dist-ui/index.html'));
 }
-app.whenReady().then(() => {
+if (firstInstance) app.whenReady().then(() => {
   createWindow();
   app.on('activate', () => { if (!BrowserWindow.getAllWindows().length) createWindow(); });
 });
@@ -96,6 +107,7 @@ async function describe(inputPath) {
   return { id: randomUUID(), name: path.basename(absolute), path: absolute, size: stat.size, types: [...new Set(types)] };
 }
 ipcMain.handle('inputs:describe', (_event, paths) => Promise.all(paths.map(describe)));
+ipcMain.handle('inputs:startup-paths', () => pendingOpenPaths.splice(0));
 ipcMain.handle('inputs:browse', async (event, type) => {
   const result = await dialog.showOpenDialog(BrowserWindow.fromWebContents(event.sender), {
     properties: type === 'folders' ? ['openDirectory','multiSelections'] : ['openFile','multiSelections']
@@ -105,7 +117,9 @@ ipcMain.handle('inputs:browse', async (event, type) => {
 ipcMain.handle('inputs:text', (_event, input) => input.text !== undefined ? String(input.text) : fsp.readFile(input.path, 'utf8'));
 ipcMain.handle('inputs:preview', async (_event, input) => {
   if (!input.path || path.extname(input.path).toLowerCase() === '.pdf') return null;
-  const bytes = await require('sharp')(input.path, { pages: 1 }).resize({ width: 1800, height: 1800, fit: 'inside', withoutEnlargement: true }).png().toBuffer();
+  const source = path.extname(input.path).toLowerCase() === '.heic'
+    ? Buffer.from(await require('heic-convert')({ buffer: await fsp.readFile(input.path), format: 'PNG' })) : input.path;
+  const bytes = await require('sharp')(source, { pages: 1 }).resize({ width: 1800, height: 1800, fit: 'inside', withoutEnlargement: true }).png().toBuffer();
   return 'data:image/png;base64,' + bytes.toString('base64');
 });
 ipcMain.handle('compare:start', (event, request) => {
@@ -113,6 +127,7 @@ ipcMain.handle('compare:start', (event, request) => {
   const worker = new Worker(path.join(__dirname, 'compare-worker.js'), { workerData: request });
   jobs.set(id, worker);
   worker.on('message', message => {
+    if (!jobs.has(id)) return;
     if (!event.sender.isDestroyed()) event.sender.send('compare:event', { id, ...message });
     if (message.kind === 'result' || message.kind === 'error') jobs.delete(id);
   });
@@ -125,7 +140,13 @@ ipcMain.handle('compare:start', (event, request) => {
   });
   return id;
 });
-ipcMain.handle('compare:cancel', (_event, id) => { jobs.get(id)?.terminate(); jobs.delete(id); });
+ipcMain.handle('compare:cancel', (_event, id) => {
+  const worker = jobs.get(id);
+  if (!worker) return;
+  jobs.delete(id);
+  worker.postMessage({ kind: 'cancel' });
+  setTimeout(() => worker.terminate(), 1000).unref();
+});
 ipcMain.handle('settings:get', () => settings());
 ipcMain.handle('settings:set', (_event, patch) => { const next = { ...settings(), ...patch }; saveSettings(next); return next; });
 ipcMain.handle('project:save', async (_event, project) => {
@@ -134,11 +155,24 @@ ipcMain.handle('project:save', async (_event, project) => {
   await fsp.mkdir(projectDir, { recursive: true });
   const copy = structuredClone({ ...project, id });
   for (const tab of copy.tabs || []) {
+    if (tab.type === 'folders' && tab.result?.entries) tab.scanManifest = tab.result.entries.map(entry => ({
+      relative: entry.relative, status: entry.status, leftHash: entry.left?.hash, rightHash: entry.right?.hash
+    }));
+    tab.result = null;
+    tab.busy = false;
+    delete tab.jobId;
+    delete tab.error;
     for (const input of [tab.left, tab.right, ...(tab.available || [])]) {
       if (!input?.path || input.types?.includes('folders')) continue;
       const target = path.join(projectDir, input.id + path.extname(input.path));
-      if (!fs.existsSync(target)) await fsp.copyFile(input.path, target);
-      input.originalPath = input.path;
+      if (path.resolve(input.path) !== path.resolve(target)) {
+        const staged = target + '.' + randomUUID() + '.tmp';
+        try {
+          await fsp.copyFile(input.path, staged);
+          await fsp.rename(staged, target);
+        } catch (error) { await fsp.rm(staged, { force: true }); throw error; }
+      }
+      input.originalPath ||= input.path;
       input.path = target;
     }
   }
@@ -156,18 +190,10 @@ ipcMain.handle('export:save', async (event, request) => {
   await fsp.writeFile(result.filePath, request.base64 ? Buffer.from(request.content, 'base64') : request.content);
   return result.filePath;
 });
-ipcMain.handle('export:pdf', async (event, { title, lines }) => {
+ipcMain.handle('export:pdf', async (event, { title, lines = [], layout, leftText, rightText, chunks = [] }) => {
   const result = await dialog.showSaveDialog(BrowserWindow.fromWebContents(event.sender), { defaultPath: title + '.pdf', filters: [{ name: 'PDF', extensions: ['pdf'] }] });
   if (result.canceled || !result.filePath) return null;
-  const PDFDocument = require('pdfkit');
-  await new Promise((resolve, reject) => {
-    const pdf = new PDFDocument({ margin: 40 });
-    const out = fs.createWriteStream(result.filePath);
-    out.on('finish', resolve); out.on('error', reject);
-    pdf.pipe(out); pdf.fontSize(18).text(title); pdf.moveDown();
-    for (const line of lines) pdf.fontSize(9).text(String(line));
-    pdf.end();
-  });
+  await fsp.writeFile(result.filePath, await require('./exporters').pdfFromComparison({ title, lines, layout, leftText, rightText, chunks }));
   return result.filePath;
 });
 ipcMain.handle('export:docx', async (event, { title, chunks, tracked }) => {
@@ -176,38 +202,15 @@ ipcMain.handle('export:docx', async (event, { title, chunks, tracked }) => {
     filters: [{ name: 'Word document', extensions: ['docx'] }]
   });
   if (result.canceled || !result.filePath) return null;
-  const { Document, Packer, Paragraph } = require('docx');
-  const JSZip = require('jszip');
-  const base = await Packer.toBuffer(new Document({ sections: [{ children: [new Paragraph('')] }] }));
-  const zip = await JSZip.loadAsync(base);
-  let xml = await zip.file('word/document.xml').async('string');
-  const escape = value => String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
-  let id = 1;
-  const paragraphs = chunks.flatMap(chunk => {
-    const lines = String(chunk.text).replace(/\n$/, '').split('\n');
-    return lines.map(line => {
-      const content = escape(line || ' ');
-      if (tracked && chunk.type !== 'same') {
-        const key = chunk.type === 'added' ? 'ins' : 'del';
-        const textKey = chunk.type === 'added' ? 't' : 'delText';
-        return '<w:p><w:' + key + ' w:id="' + id++ + '" w:author="Norways Diff Checker" w:date="' + new Date().toISOString() + '"><w:r><w:' + textKey + ' xml:space="preserve">' + content + '</w:' + textKey + '></w:r></w:' + key + '></w:p>';
-      }
-      const color = chunk.type === 'added' ? '008540' : chunk.type === 'removed' ? 'B00020' : '222222';
-      const decoration = chunk.type === 'removed' ? '<w:strike/>' : chunk.type === 'added' ? '<w:u w:val="single"/>' : '';
-      return '<w:p><w:r><w:rPr><w:color w:val="' + color + '"/>' + decoration + '</w:rPr><w:t xml:space="preserve">' + content + '</w:t></w:r></w:p>';
-    });
-  }).join('');
-  xml = xml.replace(/<w:body>[\s\S]*?(<w:sectPr[\s\S]*?<\/w:sectPr>)<\/w:body>/, '<w:body>' + paragraphs + '$1</w:body>');
-  zip.file('word/document.xml', xml);
-  await fsp.writeFile(result.filePath, await zip.generateAsync({ type: 'nodebuffer' }));
+  await fsp.writeFile(result.filePath, await require('./exporters').docxFromChunks(chunks, tracked));
   return result.filePath;
 });
 function launchInstaller(mode) {
-  const file = path.join(home, 'program', 'NorwaysDiffCheckerInstaller.exe');
-  if (!fs.existsSync(file)) return false;
-  const copy = path.join(app.getPath('temp'), 'NorwaysDiffCheckerInstaller-' + randomUUID() + '.exe');
-  fs.copyFileSync(file, copy);
-  spawn(copy, [mode], { detached: true, stdio: 'ignore', windowsHide: false }).unref();
+  const file = path.join(home, 'NorwaysDiffCheckerInstaller.bat');
+  if (!fs.existsSync(file) || !fs.existsSync(path.join(home, 'engine.ps1'))) return false;
+  spawn(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', `""${file}" ${mode}"`], {
+    detached: true, stdio: 'ignore', windowsHide: false, windowsVerbatimArguments: true
+  }).unref();
   return true;
 }
 ipcMain.handle('update:defer', () => { deferredUpdate = true; return true; });

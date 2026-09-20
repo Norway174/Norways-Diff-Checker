@@ -12,6 +12,12 @@ contextBridge.exposeInMainWorld('api', {
   },
   pathsForFiles(files) { return Array.from(files, file => webUtils.getPathForFile(file)).filter(Boolean); },
   describeInputs: call('inputs:describe'),
+  takeStartupPaths: call('inputs:startup-paths'),
+  onOpenPaths(callback) {
+    const listener = (_event, paths) => callback(paths);
+    ipcRenderer.on('inputs:open-paths', listener);
+    return () => ipcRenderer.removeListener('inputs:open-paths', listener);
+  },
   browseInputs: call('inputs:browse'),
   readText: call('inputs:text'),
   preview: call('inputs:preview'),

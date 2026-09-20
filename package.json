@@ -9,9 +9,9 @@
     "start": "npm run build:ui && electron .",
     "dev": "vite --host 127.0.0.1",
     "build:ui": "vite build",
-    "check": "tsc --noEmit && node --check electron/main.js && node --check electron/preload.js && node --check electron/compare-worker.js",
+    "check": "tsc --noEmit && node --check electron/main.js && node --check electron/preload.js && node --check electron/compare-worker.js && node --check electron/exporters.js",
     "test": "node --test tests/*.test.js",
-    "build:dir": "npm run build:ui && electron-builder --win dir",
+    "build:dir": "npm run build:ui && powershell -NoProfile -ExecutionPolicy Bypass -File scripts/ensure-libreoffice.ps1 && electron-builder --win dir",
     "build:installer": "powershell -NoProfile -ExecutionPolicy Bypass -File installer/build-installer.ps1"
   },
   "devDependencies": {
@@ -33,6 +33,8 @@
     "docx": "^9.7.1",
     "exifr": "^7.1.3",
     "fast-xml-parser": "^5.11.1",
+    "heic-convert": "2.1.0",
+    "highlight.js": "11.12.0",
     "jszip": "^3.10.2",
     "mammoth": "^1.12.3",
     "pdfjs-dist": "^6.3.289",
@@ -58,6 +60,9 @@
     "asarUnpack": [
       "**/sharp/**/*",
       "**/@img/**/*"
+    ],
+    "extraResources": [
+      { "from": "vendor/libreoffice-msi", "to": "libreoffice", "filter": ["**/*", "!*.msi"] }
     ],
     "win": {
       "target": [

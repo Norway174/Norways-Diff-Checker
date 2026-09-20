@@ -3,3 +3,5 @@ dist/
 dist-ui/
 out/
 *.log
+vendor/
+vendor-cache/

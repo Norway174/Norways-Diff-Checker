@@ -1,30 +1,41 @@
 # Norways Diff Checker
 
-Windows Electron comparison workspace. The renderer uses React, TypeScript and Vite; parsing and comparison run in cancellable worker threads. Inputs and projects stay on the local computer.
+A Windows desktop workspace for comparing text, images, documents, spreadsheets, and folders. It uses a frameless Electron window with isolated preload access, React/TypeScript UI, and worker threads for comparison jobs. Comparisons run locally. The installed Electron program does not need a separate Node.js installation.
 
-## Run and build
+## Development
 
 ```powershell
 npm ci
-npm run check
-npm test
 npm start
-npm run build:dir
-npm run build:installer
 ```
 
-`build:dir` creates an unpacked app in `dist\win-unpacked`. `build:installer` creates `dist\NorwaysDiffCheckerInstaller.exe`. The installer uses committed `HEAD` from this repository while it has no GitHub `origin`. It builds from a Git archive, so commit changes before testing installation. Once a public GitHub `origin` is configured, the generated installer resolves the latest `main` commit and downloads that commit archive. Its source configuration is embedded at installer build time; rebuild the installer after changing `origin`.
+`npm run check` checks TypeScript and JavaScript syntax. `npm run build:dir` downloads and verifies the pinned private LibreOffice copy, then produces an unpacked program at `dist\win-unpacked`. It also bundles local OCR language data and native image engines.
 
-The installer downloads and verifies Node 24.8.0, runs `npm ci`, checks and builds the app, then replaces the per-user unpacked program. It writes settings to `%LOCALAPPDATA%\NorwaysDiffChecker\settings` and program files to `%LOCALAPPDATA%\NorwaysDiffChecker\program`. No administrator access is needed. The app launches from the installed program without a network request. The uninstall entry is registered for the current user.
+## Installer
 
-## Current comparison support
+Run [installer/NorwaysDiffCheckerInstaller.bat](installer/NorwaysDiffCheckerInstaller.bat) with no arguments for its text menu, or use:
 
-- Text and code: pasted or file-backed inputs, line/word/character diff, ignore case/whitespace and literal rules, side-by-side/unified results, individual change acceptance, PDF and text export.
-- Images: JPG, PNG, WebP, GIF, HEIC and PDF pages; pixel differences, region list, several overlay views, EXIF, local OCR and PNG export.
-- Documents: DOCX, PDF and PPTX text extraction, scanned PDF OCR, text changes, protected PDF password field, PDF and Word redline/tracked export.
-- Spreadsheets: XLSX, XLS, CSV, TSV and ODS via SheetJS; sheet selection, row alignment, cell/formula differences, PDF and XLSX change-list export.
-- Folders: recursive path and content-hash comparison, exclusions, search/status filters, and opening changed file pairs in a new tab.
+```bat
+NorwaysDiffCheckerInstaller.bat -install
+NorwaysDiffCheckerInstaller.bat -update
+NorwaysDiffCheckerInstaller.bat -update-silent
+NorwaysDiffCheckerInstaller.bat -uninstall
+NorwaysDiffCheckerInstaller.bat -uninstall-keep
+NorwaysDiffCheckerInstaller.bat -uninstall-delete
+```
 
-The interface has a Welcome chooser, multiple tabs, drag-and-drop pairing, available-input lists, local project snapshots, recent projects, and settings for restoring tabs. It checks the current committed version after launch and offers update actions.
+Keep `engine.ps1` beside the batch file. `npm run build:installer` copies both scripts to `dist\installer` for distribution. Installation uses the latest **committed** `main` source. With no GitHub `origin`, the source is hardcoded to `D:\NodeJS\Norways Diff Checker` and archived from local `HEAD`; uncommitted edits are excluded. Once this repository has a GitHub `origin`, the installer resolves `main` to an exact commit and downloads its source archive. It does not use GitHub Releases.
 
-This is an initial implementation. Office rendering and conversion with bundled LibreOffice, advanced image alignment and scan presets, document structure and page-layout comparisons, spreadsheet column alignment, syntax highlighting, and the full requested clean-account installer/UI test matrix remain to be implemented. Do not treat the advanced view names as validated fidelity modes yet.
+The installer builds from `package-lock.json`. If Node 24.8.0 is already available, it uses that copy. Otherwise it offers to download a verified temporary Node build runtime; it does not install Node system-wide. A scheduled `-update-silent` obtains the temporary runtime automatically if needed. The build and native assets are validated before the live program is replaced. A failed fetch or build leaves the installed program in place.
+
+The unpacked program lives at `%LOCALAPPDATA%\NorwaysDiffChecker\program`. Preferences, projects, tab state, logs, and Electron user data live under `%LOCALAPPDATA%\NorwaysDiffChecker\settings`. The batch installer and PowerShell engine sit at the root of `%LOCALAPPDATA%\NorwaysDiffChecker` so updates can replace `program` while the installer runs. Shortcuts and the Installed Apps entry are registered for the current user. Uninstall asks whether to retain settings and saved comparisons.
+
+## Comparison workspace
+
+- **Text:** pasted or file-backed text and code, side-by-side or unified diff, word and character precision, syntax highlighting, edits, change navigation and acceptance, ignore rules, and PDF/merged-text export.
+- **Images:** JPG, PNG, WebP, GIF, HEIC, and PDF pages, multiple overlay views, pixel threshold and region grouping, manual and automatic alignment, perspective adjustment, OCR, EXIF details, scan presets, and PNG export.
+- **Documents:** DOCX, PDF, and PPTX pairs, extracted and rendered views, scanned-page and embedded-image OCR, text and structure changes, PDF page ordering, password-protected PDFs, redline decisions, and PDF/DOCX exports.
+- **Excel:** XLSX, XLS, CSV, TSV, and ODS pairs, sheet and formula modes, inserted row and column alignment, sorting, date normalization, redline and multi-pane views, PDF and XLSX exports.
+- **Folders:** recursive path, metadata, and content-hash comparison, glob exclusions, filters, search, and opening matched file pairs in tabs. Folder sources are read only.
+
+The Welcome chooser opens by default; Settings can restore the previous tabs instead. Drag and drop and Windows Open With populate tabs. Three or more inputs open a pairing chooser. Project files contain snapshots and options; folder projects keep their root paths and scan manifest.
