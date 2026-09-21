@@ -45,13 +45,37 @@ The app creates `%LOCALAPPDATA%\NorwaysDiffChecker` on launch and uses it direct
 
 ## Download
 
-There is no packaged download or installer yet. To use the app, install [Node.js](https://nodejs.org/) with npm, then clone this repository and run it from source:
+Download [NorwaysDiffCheckerInstaller.bat](https://github.com/Norway174/Norways-Diff-Checker/raw/refs/heads/main/installer/NorwaysDiffCheckerInstaller.bat), then run it to install, update, repair, or uninstall the app.
 
-```powershell
-git clone <repository-url>
-cd "Norways Diff Checker"
-npm install
-npm run start
+The installer checks for Git, Node.js, and npm together. When any are missing, it lists everything required and offers three choices:
+
+- Install the missing tools from the official [Git for Windows](https://git-scm.com/download/win) and [Node.js](https://nodejs.org/en/download) websites, then re-check.
+- Download verified portable copies into the app folder without changing the system PATH.
+- Cancel the installation.
+
+The source checkout and complete packaged Electron app are built locally under:
+
+```text
+%LOCALAPPDATA%\NorwaysDiffChecker\app
 ```
 
-Replace `<repository-url>` with this repository's Git URL. The app opens in its own Electron window and continues running while the terminal process is active.
+The installer creates a stable launcher at:
+
+```text
+%LOCALAPPDATA%\NorwaysDiffChecker\Norways Diff Checker.exe
+```
+
+Start Menu and Desktop shortcuts can be created for this launcher. Preferences and projects remain directly under `%LOCALAPPDATA%\NorwaysDiffChecker` so updates and repairs do not replace them.
+
+Updates fetch the latest `main` commit and rebuild the packaged app. If the checkout contains local modifications or commits, the installer stops and offers a normal pull, a confirmed reset to `origin/main`, or cancellation. Because this installs the latest development commit rather than a versioned release, an occasional commit may be less stable than a tagged build.
+
+Building Electron, native modules, and the bundled LibreOffice runtime requires a sizeable download and several gigabytes of temporary and installed disk space. Subsequent updates reuse the checkout and npm cache but still rebuild the application.
+
+To run the project directly for development instead, install Git and Node.js with npm, then use:
+
+```powershell
+git clone https://github.com/Norway174/Norways-Diff-Checker.git
+cd "Norways Diff Checker"
+npm ci
+npm run start
+```

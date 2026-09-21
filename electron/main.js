@@ -2,6 +2,7 @@ const { app, BrowserWindow, ipcMain, dialog, clipboard, nativeImage, shell, prot
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const path = require('node:path');
+const { spawn } = require('node:child_process');
 const { Worker } = require('node:worker_threads');
 const { randomUUID } = require('node:crypto');
 const { pathToFileURL } = require('node:url');
@@ -12,6 +13,7 @@ const limits = require('./limits');
 const localAppData = process.env.LOCALAPPDATA || path.join(path.dirname(app.getPath('appData')), 'Local');
 const dataDir = path.join(localAppData, 'NorwaysDiffChecker');
 const preferencesPath = path.join(dataDir, 'preferences.json');
+const maintenancePath = path.join(dataDir, 'NorwaysDiffCheckerInstaller.bat');
 const comparisonAssetsDir = path.join(dataDir, 'cache', 'comparison-assets');
 const rendererPath = path.join(__dirname, '../dist-ui/index.html');
 const rendererUrl = pathToFileURL(rendererPath).href;
@@ -508,7 +510,17 @@ handle('external:open-url', async (_event, value) => {
   if (url.protocol !== 'https:') throw new Error('Only secure web links can be opened.');
   await shell.openExternal(url.toString());
 });
-handle('app:check-for-updates', () => ({ status: 'up-to-date' }));
+handle('app:open-maintenance', () => {
+  if (process.platform !== 'win32') throw new Error('The maintenance tool is only available on Windows.');
+  if (!fs.existsSync(maintenancePath)) throw new Error('The maintenance tool is not installed. Download the installer from the project README.');
+  const child = spawn(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', `start "" "${maintenancePath}"`], {
+    detached: true,
+    stdio: 'ignore',
+    windowsHide: true
+  });
+  child.unref();
+  return { status: 'opened' };
+});
 handle('clipboard:write-text', (_event, text) => clipboard.writeText(limitedString(text, limits.maxInlineTextBytes, 'Clipboard text')));
 handle('export:image-view', async (event, { title, result, options, toClipboard, flickerRight }) => {
   if (!plainObject(result) || !plainObject(options) || !/^[0-9a-f-]{36}$/i.test(String(result.assetId || ''))) throw new Error('Invalid image export.');

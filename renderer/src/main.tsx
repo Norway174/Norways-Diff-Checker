@@ -370,19 +370,19 @@ function Welcome({ recent, recentEnabled, onCreate, onOpenRecent, onRemoveRecent
   onRemoveRecent: (item: Preferences['recentCompares'][number]) => void;
   onNotice: (message: string, tone?: 'error' | 'success') => void; onDismiss: () => void;
 }) {
-  const [checkingForUpdates, setCheckingForUpdates] = useState(false);
-  const checkForUpdates = async () => {
-    setCheckingForUpdates(true);
+  const [openingMaintenance, setOpeningMaintenance] = useState(false);
+  const openMaintenanceTool = async () => {
+    setOpeningMaintenance(true);
     try {
-      await window.api.checkForUpdates();
-      onNotice(`You're up to date. Version ${__APP_COMMIT__} is the latest available.`, 'success');
-    } catch (error) { onNotice('Unable to check for updates: ' + humanError(error)); }
-    finally { setCheckingForUpdates(false); }
+      await window.api.openMaintenanceTool();
+      onNotice('The maintenance tool was opened.', 'success');
+    } catch (error) { onNotice('Unable to open the maintenance tool: ' + humanError(error)); }
+    finally { setOpeningMaintenance(false); }
   };
   return <DraggableDialog title="Welcome" eyebrow="NORWAYS DIFF CHECKER" icon="difference" className="welcome" onClose={onDismiss}>
     <div className="welcome-head"><div><h1>What would you like to compare?</h1><p>Choose a comparison or drop files and folders anywhere in the window.</p></div>
       <div className="welcome-actions">
-        <button type="button" disabled={checkingForUpdates} title="Check for updates" onClick={() => void checkForUpdates()}><MaterialIcon name={checkingForUpdates ? 'progress_activity' : 'refresh'} /><span><small>VERSION</small>{checkingForUpdates ? 'Checking…' : __APP_COMMIT__}</span></button>
+        <button type="button" disabled={openingMaintenance} title="Open update and repair tool" onClick={() => void openMaintenanceTool()}><MaterialIcon name={openingMaintenance ? 'progress_activity' : 'build'} /><span><small>VERSION</small>{openingMaintenance ? 'Opening…' : __APP_COMMIT__}</span></button>
         <button type="button" title="Open Norway174 on GitHub" onClick={() => void window.api.openExternalUrl('https://github.com/Norway174')}><MaterialIcon name="open_in_new" /><span><small>PROJECT</small>Open GitHub</span></button>
       </div>
     </div>

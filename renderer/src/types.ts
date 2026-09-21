@@ -93,7 +93,7 @@ export type AppApi = {
   getShellContextMenuInstalled(): Promise<boolean>; setShellContextMenuInstalled(enabled: boolean): Promise<boolean>;
   getAppDataPath(): Promise<string>; openAppDataFolder(): Promise<void>;
   openExternalUrl(url: string): Promise<void>;
-  checkForUpdates(): Promise<{ status: 'up-to-date' }>;
+  openMaintenanceTool(): Promise<{ status: 'opened' }>;
   writeClipboardText(text: string): Promise<void>;
   exportImageView(request: { title: string; result: any; options: Options; toClipboard: boolean; flickerRight?: boolean }): Promise<string | null>;
   exportText(request: { title: string; leftText: string; rightText: string; leftName?: string; rightName?: string; kind: 'original' | 'changed' | 'unified'; fenced?: boolean; toClipboard: boolean }): Promise<string | null>;

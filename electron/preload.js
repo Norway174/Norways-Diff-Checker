@@ -64,7 +64,7 @@ contextBridge.exposeInMainWorld('api', {
   getAppDataPath: call('app-data:path'),
   openAppDataFolder: call('app-data:open'),
   openExternalUrl: call('external:open-url'),
-  checkForUpdates: call('app:check-for-updates'),
+  openMaintenanceTool: call('app:open-maintenance'),
   writeClipboardText: call('clipboard:write-text'),
   exportImageView: call('export:image-view'),
   exportText: call('export:text'),

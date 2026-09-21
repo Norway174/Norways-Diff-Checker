@@ -7,6 +7,7 @@ const vm = require('node:vm');
 test('preload reads dropped File objects before exposing only paths to the renderer', () => {
   let onDrop;
   let api;
+  const invoked = [];
   const file = { path: 'C:\\example\\before.txt' };
   const code = fs.readFileSync(path.join(__dirname, '../electron/preload.js'), 'utf8');
   vm.runInNewContext(code, {
@@ -14,7 +15,7 @@ test('preload reads dropped File objects before exposing only paths to the rende
       assert.equal(name, 'electron');
       return {
         contextBridge: { exposeInMainWorld: (_name, exposed) => { api = exposed; } },
-        ipcRenderer: { invoke: () => {}, on: () => {}, removeListener: () => {} },
+        ipcRenderer: { invoke: channel => { invoked.push(channel); }, on: () => {}, removeListener: () => {} },
         webUtils: { getPathForFile: value => { assert.equal(value, file); return value.path; } }
       };
     },
@@ -28,4 +29,6 @@ test('preload reads dropped File objects before exposing only paths to the rende
   onDrop({ dataTransfer: { files: [file] } });
   assert.deepEqual(Array.from(api.takeDroppedPaths()), [file.path]);
   assert.deepEqual(Array.from(api.takeDroppedPaths()), []);
+  api.openMaintenanceTool();
+  assert.deepEqual(invoked, ['app:open-maintenance']);
 });
