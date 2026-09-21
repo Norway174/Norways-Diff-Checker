@@ -81,6 +81,7 @@ function DraggableDialog({ title, eyebrow, icon, className = '', onClose, childr
   title: string; eyebrow: string; icon: string; className?: string; onClose: () => void; children: React.ReactNode;
 }) {
   const dialogRef = useRef<HTMLDivElement>(null);
+  const closeRef = useRef(onClose);
   const dragRef = useRef<{ pointerId: number; offsetX: number; offsetY: number } | null>(null);
   const [position, setPosition] = useState<{ x: number; y: number } | null>(null);
   const clampPosition = (x: number, y: number) => {
@@ -98,10 +99,25 @@ function DraggableDialog({ title, eyebrow, icon, className = '', onClose, childr
     return () => window.removeEventListener('resize', handleResize);
   }, []);
   useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose(); };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
+    closeRef.current = onClose;
   }, [onClose]);
+  useEffect(() => {
+    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const dialog = dialogRef.current;
+    const focusable = () => Array.from(dialog?.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])') || []);
+    focusable()[0]?.focus();
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') { closeRef.current(); return; }
+      if (event.key !== 'Tab') return;
+      const items = focusable();
+      if (!items.length) return;
+      const first = items[0], last = items.at(-1)!;
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => { window.removeEventListener('keydown', handleKeyDown); previousFocus?.focus(); };
+  }, []);
   return <div className="modal-backdrop"><div
     ref={dialogRef}
     className={'modal dialog-window ' + className}
@@ -242,7 +258,7 @@ function Titlebar({ tabs, active, onSelect, onNew, onClose, onReorder, onReceive
   </div> : null;
   return <header className="titlebar">
     <div className="brand">NORWAYS DIFF CHECKER</div>
-    <nav ref={tabsElement} className="tabs" aria-label="Comparison tabs"
+    <nav ref={tabsElement} className="tabs" role="tablist" aria-label="Comparison tabs"
       onDragOver={event => { if (event.dataTransfer.types.includes(tabTokenType)) { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; document.body.classList.remove('detaching-tab'); updateGhost(event.clientX); } }}
       onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setGhostIndex(null); }}
       onDrop={async event => {
@@ -257,7 +273,15 @@ function Titlebar({ tabs, active, onSelect, onNew, onClose, onReorder, onReceive
           onReceive(tab, index < tabs.length ? tabs[index].id : null, false);
         }
       }}>
-      {tabs.map((tab, index) => <Fragment key={tab.id}>{ghostIndex === index && ghostTab}<div draggable className={'tab ' + (active === tab.id ? 'selected' : '')} onClick={() => onSelect(tab.id)}
+      {tabs.map((tab, index) => <Fragment key={tab.id}>{ghostIndex === index && ghostTab}<div draggable className={'tab ' + (active === tab.id ? 'selected' : '')} role="tab" aria-selected={active === tab.id} tabIndex={active === tab.id ? 0 : -1} onClick={() => onSelect(tab.id)}
+        onKeyDown={event => {
+          if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onSelect(tab.id); return; }
+          if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+          event.preventDefault();
+          const nextIndex = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : (index + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+          onSelect(tabs[nextIndex].id);
+          requestAnimationFrame(() => tabsElement.current?.querySelectorAll<HTMLElement>('[role="tab"]')[nextIndex]?.focus());
+        }}
         onDragStart={event => {
           localDragId.current = tab.id;
           dragToken.current = window.api.beginTabDrag(tab, tabs.length);
@@ -300,7 +324,7 @@ function Titlebar({ tabs, active, onSelect, onNew, onClose, onReorder, onReceive
           else void window.api.detachTab(token, { x: position.screenX, y: position.screenY });
         }}>
         <MaterialIcon name={modes.find(mode => mode.id === tab.type)?.icon || 'draft'} className="tab-symbol" /><span className="tab-name">{tab.title}</span>
-        <button className="tab-close" title="Close tab" aria-label="Close tab" onClick={event => { event.stopPropagation(); onClose(tab.id); }}><MaterialIcon name="close" /></button>
+        <button className="tab-close" title={'Close ' + tab.title} aria-label={'Close ' + tab.title} onClick={event => { event.stopPropagation(); onClose(tab.id); }}><MaterialIcon name="close" /></button>
       </div></Fragment>)}
       {ghostIndex === tabs.length && ghostTab}
       <button className="new-tab" title="New comparison" aria-label="New comparison" onClick={onNew}><MaterialIcon name="add" /></button>
@@ -367,8 +391,10 @@ function Settings({ prefs, appDataPath, contextMenuInstalled, contextMenuBusy, o
   const visibleCategories = settingsCategories.filter(item => !normalizedQuery || (item.id !== 'all' && `${item.label} ${item.hint} ${item.keywords}`.toLowerCase().includes(normalizedQuery)));
   const selectedCategory = visibleCategories.some(item => item.id === category) ? category : visibleCategories[0]?.id;
   const savePreferences = async (patch: Partial<Preferences>) => {
-    const value = await window.api.setSettings(patch);
-    onPrefs(value);
+    try {
+      const value = await window.api.setSettings(patch);
+      onPrefs(value);
+    } catch (error) { onNotice('Unable to save settings: ' + humanError(error)); }
   };
   return <DraggableDialog title="Settings" eyebrow="NORWAYS DIFF CHECKER" icon="settings" className="settings-modal" onClose={onClose}>
     <div className="settings-search"><MaterialIcon name="search" /><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search settings" aria-label="Search settings" />{query && <button type="button" title="Clear search" aria-label="Clear search" onClick={() => setQuery('')}><MaterialIcon name="close" /></button>}</div>
@@ -411,7 +437,7 @@ function Pairing({ inputs, type, onChangeType, onCancel, onConfirm }: {
   const [right, setRight] = useState(inputs[1]?.id);
   const inputLeft = inputs.find(input => input.id === left)!;
   const inputRight = inputs.find(input => input.id === right)!;
-  return <div className="modal-backdrop"><div className="pairing modal">
+  return <DraggableDialog title="Pair inputs" eyebrow="NORWAYS DIFF CHECKER" icon="compare_arrows" className="pairing" onClose={onCancel}>
     <div className="small-caps">PAIR INPUTS</div><h2>Choose two to compare</h2><p>Only two inputs are active in a comparison. The rest stay available for later swaps.</p>
     <div className="pair-row">
       <label>Original<select value={left} onChange={event => { if (event.target.value === right) setRight(left); setLeft(event.target.value); }}>{inputs.map(input => <option key={input.id} value={input.id}>{input.name}</option>)}</select></label>
@@ -421,7 +447,7 @@ function Pairing({ inputs, type, onChangeType, onCancel, onConfirm }: {
     <label className="type-select">Compare as<select value={type} onChange={event => onChangeType(event.target.value as Mode)}>{modes.filter(mode => inputs.every(input => input.types.includes(mode.id))).map(mode => <option key={mode.id} value={mode.id}>{mode.label}</option>)}</select></label>
     <div className="pair-list">{inputs.map(input => <div key={input.id}><span>{input.name}</span><small>{input.id === left ? 'Original' : input.id === right ? 'Changed' : 'Available'}</small></div>)}</div>
     <footer><button onClick={onCancel}>Cancel</button><button className="primary" onClick={() => onConfirm(inputLeft, inputRight, inputs.filter(input => input.id !== left && input.id !== right), type)}>Compare</button></footer>
-  </div></div>;
+  </DraggableDialog>;
 }
 function InputSlot({ side, input, available, type, onBrowse, onReplace, onDrop }: {
   side: 'left' | 'right'; input: Input | null; available: Input[]; type: Mode;
@@ -444,19 +470,41 @@ function DiffText({ result, options, language, selectedGroup, changeGroups, onSe
   const scrollLock = useRef(false);
   useEffect(() => setPage(0), [result]);
   const hasChunks = !!result?.chunks;
-  const chunks = !hasChunks ? [] : options.hideUnchanged ? result.chunks.filter((item: any) => item.type !== 'same') : result.chunks;
+  const chunks = !hasChunks ? [] : result.chunks;
+  const groups: any[][] = [];
+  for (let index = 0; index < chunks.length;) {
+    if (chunks[index].type === 'same') {
+      groups.push([chunks[index++]]);
+      continue;
+    }
+    const group: any[] = [];
+    while (index < chunks.length && chunks[index].type !== 'same') group.push(chunks[index++]);
+    groups.push(group);
+  }
+  const displayedGroups = options.hideUnchanged ? groups.filter(group => group[0]?.type !== 'same') : groups;
   const pageSize = 300;
-  const pageCount = Math.max(1, Math.ceil(chunks.length / pageSize));
-  const visible = chunks.slice(Math.min(page, pageCount - 1) * pageSize, (Math.min(page, pageCount - 1) + 1) * pageSize);
+  const pages: any[][][] = [[]];
+  let pageLength = 0;
+  for (const group of displayedGroups) {
+    if (pageLength > 0 && pageLength + group.length > pageSize) {
+      pages.push([]);
+      pageLength = 0;
+    }
+    pages.at(-1)!.push(group);
+    pageLength += group.length;
+  }
+  const pageCount = pages.length;
+  const visibleGroups = pages[Math.min(page, pageCount - 1)] || [];
+  const visible = visibleGroups.flat();
   const splitRows: Array<{ left?: any; right?: any }> = [];
-  for (let index = 0; index < visible.length; index++) {
-    const part = visible[index];
-    if (part.type === 'same') { splitRows.push({ left: part, right: part }); continue; }
-    const next = visible[index + 1];
-    if (next && next.type !== 'same' && next.type !== part.type) {
-      splitRows.push(part.type === 'removed' ? { left: part, right: next } : { left: next, right: part });
-      index++;
-    } else splitRows.push(part.type === 'removed' ? { left: part } : { right: part });
+  for (const group of visibleGroups) {
+    if (group[0]?.type === 'same') {
+      for (const part of group) splitRows.push({ left: part, right: part });
+      continue;
+    }
+    const removed = group.filter(part => part.type === 'removed');
+    const added = group.filter(part => part.type === 'added');
+    for (let index = 0; index < Math.max(removed.length, added.length); index++) splitRows.push({ left: removed[index], right: added[index] });
   }
   useEffect(() => {
     if (!options.syncLineHeights || options.view !== 'split') { setRowHeights([]); return; }
@@ -517,8 +565,18 @@ function TextView({ tab, onText, onOption }: { tab: CompareTab; onText: (side: '
   const editorRefs = useRef<Array<HTMLTextAreaElement | null>>([null, null]);
   const editorScrollLock = useRef(false);
   const [selectedChange, setSelectedChange] = useState(0);
-  useEffect(() => { if (tab.left) window.api.readText(tab.left).then(setLeft).catch(() => setLeft('')); else setLeft(''); }, [tab.left?.id]);
-  useEffect(() => { if (tab.right) window.api.readText(tab.right).then(setRight).catch(() => setRight('')); else setRight(''); }, [tab.right?.id]);
+  useEffect(() => {
+    let current = true;
+    if (tab.left) window.api.readText(tab.left).then(value => { if (current) setLeft(value); }).catch(error => { if (current) setLeft('Unable to read file: ' + humanError(error)); });
+    else setLeft('');
+    return () => { current = false; };
+  }, [tab.left?.id]);
+  useEffect(() => {
+    let current = true;
+    if (tab.right) window.api.readText(tab.right).then(value => { if (current) setRight(value); }).catch(error => { if (current) setRight('Unable to read file: ' + humanError(error)); });
+    else setRight('');
+    return () => { current = false; };
+  }, [tab.right?.id]);
   useEffect(() => {
     if (typeof tab.result?.leftText === 'string' && (tab.left?.text === undefined || tab.left.text === tab.result.leftText)) setLeft(tab.result.leftText);
     if (typeof tab.result?.rightText === 'string' && (tab.right?.text === undefined || tab.right.text === tab.result.rightText)) setRight(tab.result.rightText);
@@ -643,6 +701,7 @@ function ImageView({ tab, onOption, onFlickerChange, flickerProgressRef, flicker
   const [sliderHandleHover, setSliderHandleHover] = useState(false);
   const [regionsOpen, setRegionsOpen] = useState(false);
   const [regionsHeight, setRegionsHeight] = useState(220);
+  const [animatedOpacity, setAnimatedOpacity] = useState(tab.options.opacity);
   const dragPoint = useRef<{ x: number; y: number } | null>(null);
   const sliderDragging = useRef(false);
   const regionsDrag = useRef<{ y: number; height: number; moved: boolean } | null>(null);
@@ -673,6 +732,9 @@ function ImageView({ tab, onOption, onFlickerChange, flickerProgressRef, flicker
     if (manualFlickToken && tab.options.view === 'flicker') setFlicker(value => !value);
   }, [manualFlickToken]);
   useEffect(() => {
+    if (!transitionRunning) setAnimatedOpacity(tab.options.opacity);
+  }, [tab.options.opacity, transitionRunning]);
+  useEffect(() => {
     if (!transitionRunning || (tab.options.view !== 'slider' && tab.options.view !== 'fade')) return;
     const maximum = tab.options.view === 'slider' ? revealInternalMaximum : percentageMaximum;
     const duration = Math.max(1, tab.options.transitionMs ?? 500);
@@ -688,11 +750,11 @@ function ImageView({ tab, onOption, onFlickerChange, flickerProgressRef, flicker
         if (position > maximum) { position = maximum - (position - maximum); direction = -1; }
         if (position < 0) { position = -position; direction = 1; }
       }
-      onOption({ opacity: position });
+      setAnimatedOpacity(position);
       frame = requestAnimationFrame(animate);
     };
     frame = requestAnimationFrame(animate);
-    return () => cancelAnimationFrame(frame);
+    return () => { cancelAnimationFrame(frame); onOption({ opacity: position }); };
   }, [tab.id, tab.options.view, tab.options.transitionMs, transitionRunning]);
   useEffect(() => {
     const surface = imageSurfaceRef.current;
@@ -827,13 +889,14 @@ function ImageView({ tab, onOption, onFlickerChange, flickerProgressRef, flicker
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
     if (!moved) setRegionsOpen(value => !value);
   };
+  const displayOpacity = transitionRunning ? animatedOpacity : tab.options.opacity;
   return <div ref={workspaceRef} className="image-workspace" onDragStart={event => event.preventDefault()}>
-    {view === 'split' ? <div ref={imageSurfaceRef} className={'image-split ' + (tab.options.splitOrientation || 'vertical')} {...interaction}><div><img src={result.splitLeftData || result.leftData} style={imageStyle(result.splitLeftWidth || result.width, result.splitLeftHeight || result.height)} /></div><div><img src={result.splitRightData || result.rightData} style={imageStyle(result.splitRightWidth || result.width, result.splitRightHeight || result.height)} /></div></div> : <div ref={imageSurfaceRef} className={'image-stage' + (view === 'slider' && sliderHandleHover ? ' slider-control-hover' : '')} {...interaction}>
-      <img ref={baseImageRef} className="image-base" src={view === 'flicker' && flicker ? rightDisplayData : leftDisplayData} style={{ ...canvasStyle, ...(view === 'slider' && tab.options.sliderNoOverlap ? { clipPath: 'inset(0 0 0 calc(' + tab.options.opacity + '% - ' + (0.5 / zoom) + 'px))' } : {}) }} />
-      {view === 'slider' && <img className="image-overlay" src={rightDisplayData} style={{ ...canvasStyle, clipPath: 'inset(0 ' + (100 - tab.options.opacity) + '% 0 0)' }} />}
-      {view === 'fade' && <img className="image-overlay" src={rightDisplayData} style={{ ...canvasStyle, opacity: tab.options.opacity / 100 }} />}
-      {view === 'subtract' && <img className="image-overlay" src={result.subtractData} style={canvasStyle} />}
-      {view === 'highlight' && <img className="image-overlay" src={result.diffData} style={canvasStyle} />}
+    {view === 'split' ? <div ref={imageSurfaceRef} className={'image-split ' + (tab.options.splitOrientation || 'vertical')} {...interaction}><div><img alt="Original image" src={result.splitLeftData || result.leftData} style={imageStyle(result.splitLeftWidth || result.width, result.splitLeftHeight || result.height)} /></div><div><img alt="Changed image" src={result.splitRightData || result.rightData} style={imageStyle(result.splitRightWidth || result.width, result.splitRightHeight || result.height)} /></div></div> : <div ref={imageSurfaceRef} className={'image-stage' + (view === 'slider' && sliderHandleHover ? ' slider-control-hover' : '')} {...interaction}>
+      <img alt={view === 'flicker' && flicker ? 'Changed image' : 'Original image'} ref={baseImageRef} className="image-base" src={view === 'flicker' && flicker ? rightDisplayData : leftDisplayData} style={{ ...canvasStyle, ...(view === 'slider' && tab.options.sliderNoOverlap ? { clipPath: 'inset(0 0 0 calc(' + displayOpacity + '% - ' + (0.5 / zoom) + 'px))' } : {}) }} />
+      {view === 'slider' && <img alt="Changed image overlay" className="image-overlay" src={rightDisplayData} style={{ ...canvasStyle, clipPath: 'inset(0 ' + (100 - displayOpacity) + '% 0 0)' }} />}
+      {view === 'fade' && <img alt="Changed image overlay" className="image-overlay" src={rightDisplayData} style={{ ...canvasStyle, opacity: displayOpacity / 100 }} />}
+      {view === 'subtract' && <img alt="Image subtraction result" className="image-overlay" src={result.subtractData} style={canvasStyle} />}
+      {view === 'highlight' && <img alt="Highlighted image differences" className="image-overlay" src={result.diffData} style={canvasStyle} />}
     </div>}<section className={'image-regions-panel' + (regionsOpen ? ' open' : '')} style={regionsOpen ? { height: regionsHeight } : undefined}>
       <div className="image-regions-header">
         <button className="image-regions-summary" aria-expanded={regionsOpen} onPointerDown={startRegionsDrag} onPointerMove={moveRegionsDrag} onPointerUp={finishRegionsDrag} onPointerCancel={() => { regionsDrag.current = null; }}>
@@ -865,10 +928,12 @@ function ExcelView({ tab, onOption }: { tab: CompareTab; onOption: (patch: Parti
   useEffect(() => setChangePage(0), [result]);
   if (!result) return <div className="empty-result">Choose two spreadsheets to compare sheets and cells.</div>;
   const changed = new Set<string>(result.changed.map((item: any) => item.row + ':' + item.col));
+  const changedRows = new Set<number>(result.changed.map((item: any) => item.row));
+  const changedColumns = new Set<number>(result.changed.map((item: any) => item.col));
   const rowCount = Math.max(result.leftRows.length, result.rightRows.length);
   const colCount = Math.max(result.leftRows.reduce((maximum: number, row: any[]) => Math.max(maximum, row.length), 0), result.rightRows.reduce((maximum: number, row: any[]) => Math.max(maximum, row.length), 0));
-  const rows = Array.from({ length: rowCount }, (_, i) => i).filter(row => !tab.options.hideRows || [...changed].some(value => value.startsWith(row + ':')));
-  const cols = Array.from({ length: colCount }, (_, i) => i).filter(col => !tab.options.hideColumns || [...changed].some(value => value.endsWith(':' + col)));
+  const rows = Array.from({ length: rowCount }, (_, i) => i).filter(row => !tab.options.hideRows || changedRows.has(row));
+  const cols = Array.from({ length: colCount }, (_, i) => i).filter(col => !tab.options.hideColumns || changedColumns.has(col));
   const pageCount = Math.max(1, Math.ceil(rows.length / 250));
   const visibleRows = rows.slice(Math.min(page, pageCount - 1) * 250, (Math.min(page, pageCount - 1) + 1) * 250);
   const grid = (which: 'left' | 'right') => <div className="sheet-grid"><table><tbody>
@@ -898,7 +963,7 @@ function FolderView({ tab, onOpenPair }: { tab: CompareTab; onOpenPair: (left: s
   const pairs = (tab.result?.entries || []).filter((entry: any) => selected.has(entry.relative) && entry.left?.path && entry.right?.path && !entry.directory);
   const pageCount = Math.max(1, Math.ceil(entries.length / 500));
   const visibleEntries = entries.slice(Math.min(page, pageCount - 1) * 500, (Math.min(page, pageCount - 1) + 1) * 500);
-  return <div className="folder-view"><div className="folder-toolbar"><input value={search} onChange={event => setSearch(event.target.value)} placeholder="Search paths…" />
+  return <div className="folder-view"><div className="folder-toolbar"><input aria-label="Search folder paths" value={search} onChange={event => setSearch(event.target.value)} placeholder="Search paths…" />
     <select value={filter} onChange={event => setFilter(event.target.value)}>{['all','added','removed','modified','same'].map(status => <option key={status}>{status}</option>)}</select>
     <label className="check"><input type="checkbox" checked={collapseUnchanged} onChange={event => setCollapseUnchanged(event.target.checked)} />Collapse unchanged</label>
     <button disabled={!pairs.length} onClick={() => pairs.forEach((entry: any) => onOpenPair(entry.left.path, entry.right.path))}>Compare selected ({pairs.length})</button>
@@ -1053,11 +1118,12 @@ function App() {
       if (event.kind === 'progress') patchTab(tab.id, { progress: event.value || 0, phase: event.phase || '' });
       if (event.kind === 'result') {
         const scan = tab.type === 'images' ? { at: new Date().toISOString(), count: event.result.count, changed: event.result.changed, options: tab.options } : null;
-        patchTab(tab.id, { result: event.result, busy: false, progress: 100, phase: 'Complete', error: undefined,
+        patchTab(tab.id, { result: event.result, busy: false, progress: 100, phase: 'Complete', error: undefined, jobId: undefined,
           ...(scan ? { scans: [...(tab.scans || []), scan].slice(-50) } : {}) });
         if (tab.left?.path && tab.right?.path) void window.api.getSettings().then(value => { prefsRef.current = value; setPrefs(value); });
       }
-      if (event.kind === 'error') patchTab(tab.id, { busy: false, error: event.error || 'Comparison failed.' });
+      if (event.kind === 'error') patchTab(tab.id, { busy: false, error: event.error || 'Comparison failed.', jobId: undefined });
+      if (event.kind === 'cancelled') patchTab(tab.id, { busy: false, progress: 0, phase: '', jobId: undefined });
     });
     const stopOpen = window.api.onOpenPaths((paths, mode) => {
       window.api.describeInputs(paths).then(inputs => routeInputs(inputs, undefined, undefined, mode)).catch(error => showNotice(humanError(error)));
@@ -1066,7 +1132,8 @@ function App() {
       removeTransferredTab(id);
       if (closeWindow) void window.api.closeWindow();
     });
-    return () => { stopCompare(); stopOpen(); stopTransferred(); };
+    const stopPrimary = window.api.onPrimaryWindowChange(value => { primaryWindow.current = value; });
+    return () => { stopCompare(); stopOpen(); stopTransferred(); stopPrimary(); };
   }, []);
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -1077,11 +1144,14 @@ function App() {
   async function run(tab: CompareTab) {
     if (!tab.left || !tab.right) return;
     if (tab.jobId) await window.api.cancelCompare(tab.jobId);
-    patchTab(tab.id, { busy: true, progress: 0, phase: 'Preparing', error: undefined });
+    const jobId = crypto.randomUUID();
+    patchTab(tab.id, { busy: true, progress: 0, phase: 'Preparing', error: undefined, result: null, decisions: undefined, jobId });
     try {
-      const jobId = await window.api.startCompare({ type: tab.type, left: tab.left, right: tab.right, options: tab.options });
-      patchTab(tab.id, { jobId });
-    } catch (error) { patchTab(tab.id, { busy: false, error: humanError(error) }); }
+      await window.api.startCompare({ id: jobId, type: tab.type, left: tab.left, right: tab.right, options: tab.options });
+    } catch (error) {
+      const current = tabsRef.current.find(item => item.id === tab.id);
+      if (current?.jobId === jobId) patchTab(tab.id, { busy: false, error: humanError(error), jobId: undefined });
+    }
   }
   function schedule(tab: CompareTab) {
     const pending = compareTimers.current.get(tab.id);
@@ -1100,14 +1170,15 @@ function App() {
   }
   function changeOptions(tab: CompareTab, patch: Partial<Options>) {
     const current = tabsRef.current.find(item => item.id === tab.id) || tab;
-    const next = { ...current, options: { ...current.options, ...patch } };
+    const recompute = Object.keys(patch).some(key => !['view','opacity','sliderNoOverlap','flickerMs','transitionMs','wrap','syncScroll','syncLineHeights','hideUnchanged','hideRows','hideColumns','syntaxHighlight'].includes(key)) || (current.type === 'documents' && patch.view === 'image');
+    const next = { ...current, options: { ...current.options, ...patch }, ...(recompute ? { result: null, decisions: undefined } : {}) };
     patchTab(tab.id, next);
     if (tab.type === 'images' && patch.view !== undefined) {
       const lastImageView = imageViewOrDefault(patch.view);
       prefsRef.current = { ...prefsRef.current, lastImageView };
       void window.api.setSettings({ lastImageView }).then(value => { prefsRef.current = value; setPrefs(value); });
     }
-    if (current.left && current.right && (Object.keys(patch).some(key => !['view','opacity','sliderNoOverlap','flickerMs','transitionMs','wrap','syncScroll','syncLineHeights','hideUnchanged','hideRows','hideColumns','syntaxHighlight'].includes(key)) || (current.type === 'documents' && patch.view === 'image'))) schedule(next);
+    if (current.left && current.right && recompute) schedule(next);
   }
   function addTab(type: Mode, left: Input | null = null, right: Input | null = null, available: Input[] = []) {
     const tab = newTab(type, left, right, available, imageViewOrDefault(prefsRef.current.lastImageView)); commitTabs([...tabsRef.current, tab]); setActiveId(tab.id); setWelcome(false);
@@ -1146,6 +1217,8 @@ function App() {
     catch (error) { showNotice(humanError(error)); }
   }
   function closeTab(id: string) {
+    const tab = tabsRef.current.find(item => item.id === id);
+    if (tab?.jobId) void window.api.cancelCompare(tab.jobId);
     const pending = compareTimers.current.get(id);
     if (pending) clearTimeout(pending);
     compareTimers.current.delete(id);
@@ -1260,10 +1333,10 @@ function App() {
       onReceive={receiveTab}
       onSettings={() => setSettingsOpen(true)} onAppClose={appClose} />
     {active ? <main className="workspace">
-      <div className="workspace-top"><div><span className="small-caps">{active.type.toUpperCase()} COMPARISON</span><input className="tab-title-edit" value={active.title} onChange={event => patchTab(active.id, { title: event.target.value })} /></div>
+      <div className="workspace-top"><div><span className="small-caps">{active.type.toUpperCase()} COMPARISON</span><input aria-label="Comparison title" className="tab-title-edit" value={active.title} onChange={event => patchTab(active.id, { title: event.target.value })} /></div>
         <div className="workspace-actions"><span className="change-count">{active.result?.count ?? 0} changes</span>
-          {active.busy ? <button onClick={() => { if (active.jobId) void window.api.cancelCompare(active.jobId); patchTab(active.id, { busy: false }); }}>Cancel · {active.progress}%</button> : <button onClick={() => void run(active)}>Compare</button>}
-          <select aria-label="Export comparison" value="" disabled={!active.result} onChange={event => { if (event.target.value) void exportResult(active, event.target.value); }}>
+          {active.busy ? <button onClick={() => { if (active.jobId) void window.api.cancelCompare(active.jobId); patchTab(active.id, { busy: false, progress: 0, phase: '', jobId: undefined }); }}>Cancel · {active.progress}%</button> : <button onClick={() => void run(active)}>Compare</button>}
+          <select aria-label="Export comparison" value="" disabled={active.busy || !active.result} onChange={event => { if (event.target.value) void exportResult(active, event.target.value); }}>
             <option value="">Export…</option>
             {active.type === 'images' && <><option value="image-view">Image View</option><option value="image-view-clipboard">Image View to Clipboard</option></>}
             {active.type === 'text' && <><optgroup label="Save to File"><option value="text-file-original">Original Text</option><option value="text-file-changed">Changed Text</option><option value="text-file-unified">Unified Diff</option></optgroup><optgroup label="Copy to Clipboard"><option value="text-clipboard-original">Original Text</option><option value="text-clipboard-changed">Changed Text</option><option value="text-clipboard-unified">Unified Diff</option><option value="text-clipboard-unified-fenced">Diff Format</option></optgroup></>}
@@ -1273,7 +1346,7 @@ function App() {
             <option value="pdf">PDF report</option>
           </select></div></div>
       <div className="input-row"><InputSlot side="left" input={active.left} available={active.available} type={active.type} onBrowse={() => void browse(active, 'left')} onReplace={input => setInput(active, 'left', input)} onDrop={event => void fromDrop(event)} />
-            <button className="swap" title="Swap sides" aria-label="Swap sides" onClick={() => { const next = { ...active, left: active.right, right: active.left, decisions: undefined }; patchTab(active.id, next); void run(next); }}><MaterialIcon name="swap_horiz" /></button>
+            <button className="swap" title="Swap sides" aria-label="Swap sides" onClick={() => { const next = { ...active, left: active.right, right: active.left, result: null, decisions: undefined }; patchTab(active.id, next); void run(next); }}><MaterialIcon name="swap_horiz" /></button>
         <InputSlot side="right" input={active.right} available={active.available} type={active.type} onBrowse={() => void browse(active, 'right')} onReplace={input => setInput(active, 'right', input)} onDrop={event => void fromDrop(event)} /></div>
       {active.error && <div className="error-banner">{active.error}</div>}
       {active.busy && <div className="progress"><div style={{ width: active.progress + '%' }} /></div>}

@@ -20,7 +20,9 @@ const activeChildren = new Set();
 let cancelled = false;
 const srgbPng = image => image.withIccProfile('srgb').png().toBuffer();
 parentPort.on('message', message => { if (message?.kind === 'cancel') { cancelled = true; for (const child of activeChildren) child.kill(); } });
+function throwIfCancelled() { if (cancelled) throw new Error('Comparison cancelled.'); }
 async function officePdf(input) {
+  throwIfCancelled();
   if (path.extname(input.path).toLowerCase() === '.pdf') return { file: input.path, clean: async () => {} };
   const packagedEngine = process.resourcesPath && path.join(process.resourcesPath, 'libreoffice', 'program', 'soffice.exe');
   const engine = packagedEngine && fs.existsSync(packagedEngine) ? packagedEngine
@@ -34,6 +36,7 @@ async function officePdf(input) {
     await fsp.rm(work, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   };
   try {
+    throwIfCancelled();
     await new Promise((resolve, reject) => {
       const child = spawn(engine, [`-env:UserInstallation=${profile}`, '--headless', '--convert-to', 'pdf', '--outdir', work, input.path], { windowsHide: true });
       activeChildren.add(child);
@@ -41,6 +44,7 @@ async function officePdf(input) {
       child.on('error', error => { activeChildren.delete(child); clearTimeout(timer); reject(error); });
       child.on('exit', code => { clearTimeout(timer); activeChildren.delete(child); if (cancelled) reject(new Error('Comparison cancelled.')); else if (code === 0) resolve(); else reject(new Error(`Office conversion failed (${code}).`)); });
     });
+    throwIfCancelled();
     if (!fs.existsSync(output)) throw new Error('Office conversion produced no PDF.');
     return { file: output, clean };
   } catch (error) { await clean(); throw error; }
@@ -668,7 +672,11 @@ async function run() {
   const operation = { text: compareText, images: compareImages, documents: compareDocuments, excel: compareExcel, folders: compareFolders }[request.type];
   if (!operation) throw new Error('Unknown comparison type.');
   const result = await operation();
+  throwIfCancelled();
   report(100, 'Complete');
   parentPort.postMessage({ kind: 'result', result });
 }
-run().catch(error => parentPort.postMessage({ kind: 'error', error: error.message || String(error) })).finally(() => parentPort.close());
+run().catch(error => parentPort.postMessage(cancelled
+  ? { kind: 'cancelled' }
+  : { kind: 'error', error: error.message || String(error) }
+)).finally(() => parentPort.close());

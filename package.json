@@ -1,6 +1,7 @@
 {
   "name": "norways-diff-checker",
   "version": "0.1.0",
+  "author": "Norway174",
   "private": true,
   "description": "Norways Diff Checker desktop app",
   "productName": "Norways Diff Checker",

@@ -1,30 +1,110 @@
-const { app, BrowserWindow, ipcMain, dialog, clipboard, ClipboardItem, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, clipboard, nativeImage, shell } = require('electron');
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const path = require('node:path');
 const { Worker } = require('node:worker_threads');
 const { randomUUID } = require('node:crypto');
+const { pathToFileURL } = require('node:url');
 const { createOpenPathBatcher, selectExternalWindow } = require('./external-open');
 const { hasWindowsContextMenu, isWindowsContextMenuInstalled, setWindowsContextMenu } = require('./shell-integration');
 
 const localAppData = process.env.LOCALAPPDATA || path.join(path.dirname(app.getPath('appData')), 'Local');
 const dataDir = path.join(localAppData, 'NorwaysDiffChecker');
 const preferencesPath = path.join(dataDir, 'preferences.json');
+const rendererPath = path.join(__dirname, '../dist-ui/index.html');
+const rendererUrl = pathToFileURL(rendererPath).href;
+const maxProbeBytes = 256 * 1024 * 1024;
+const maxPreviewPixels = 100 * 1000 * 1000;
+const maxConcurrentJobs = 2;
 fs.mkdirSync(dataDir, { recursive: true });
 fs.mkdirSync(path.join(dataDir, 'cache'), { recursive: true });
 app.setPath('userData', dataDir);
 app.setPath('sessionData', path.join(dataDir, 'cache'));
 let mainWindow;
 const jobs = new Map();
+let activeJobCount = 0;
 const tabDrags = new Map();
 const windowState = new Map();
+function isTrustedIpc(event) {
+  if (!event.senderFrame || event.senderFrame !== event.sender.mainFrame) return false;
+  try {
+    const source = new URL(event.senderFrame.url);
+    source.hash = '';
+    source.search = '';
+    return source.href === rendererUrl;
+  } catch { return false; }
+}
+function requireTrustedIpc(event) {
+  if (!isTrustedIpc(event)) throw new Error('Blocked IPC from an untrusted renderer.');
+}
+const handle = (channel, listener) => ipcMain.handle(channel, (event, ...args) => {
+  requireTrustedIpc(event);
+  return listener(event, ...args);
+});
+const on = (channel, listener) => ipcMain.on(channel, (event, ...args) => {
+  requireTrustedIpc(event);
+  return listener(event, ...args);
+});
 function broadcastTabDragState(preview) {
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed() && !win.webContents.isDestroyed()) win.webContents.send('tabs:drag-state', preview);
   }
 }
-const externalPaths = argv => argv.slice(1).filter(value => !value.startsWith('-') && fs.existsSync(value) && path.resolve(value) !== path.resolve(app.getAppPath())).map(value => path.resolve(value));
-const initialOpenPaths = externalPaths(process.argv);
+function finishJob(id) {
+  const job = jobs.get(id);
+  if (!job) return;
+  jobs.delete(id);
+  if (job.started) activeJobCount--;
+  startQueuedJobs();
+}
+function cancelJob(id, senderId) {
+  const job = jobs.get(id);
+  if (!job || (senderId !== undefined && job.senderId !== senderId)) return;
+  if (!job.started) {
+    jobs.delete(id);
+    startQueuedJobs();
+    return;
+  }
+  job.worker.postMessage({ kind: 'cancel' });
+  job.cancelTimer = setTimeout(() => job.worker.terminate(), 5000);
+  job.cancelTimer.unref();
+}
+function startQueuedJobs() {
+  while (activeJobCount < maxConcurrentJobs) {
+    const entry = [...jobs.entries()].find(([, job]) => !job.started);
+    if (!entry) return;
+    const [id, job] = entry;
+    job.started = true;
+    activeJobCount++;
+    const worker = new Worker(path.join(__dirname, 'compare-worker.js'), { workerData: job.request });
+    job.worker = worker;
+    worker.on('message', message => {
+      if (!jobs.has(id)) return;
+      if (message.kind === 'result' && job.request.left?.path && job.request.right?.path) {
+        const recent = { type: job.request.type, left: job.request.left.originalPath || job.request.left.path, right: job.request.right.originalPath || job.request.right.path };
+        const next = settings();
+        next.recentCompares = next.recentCompareLimit > 0
+          ? [recent, ...next.recentCompares.filter(item => item.type !== recent.type || item.left !== recent.left || item.right !== recent.right)].slice(0, next.recentCompareLimit)
+          : [];
+        saveSettings(next);
+      }
+      if (!job.sender.isDestroyed()) job.sender.send('compare:event', { id, ...message });
+      if (message.kind === 'result' || message.kind === 'error' || message.kind === 'cancelled') finishJob(id);
+    });
+    worker.on('error', error => {
+      if (!jobs.has(id)) return;
+      if (!job.sender.isDestroyed()) job.sender.send('compare:event', { id, kind: 'error', error: error.message });
+      finishJob(id);
+    });
+    worker.on('exit', code => {
+      if (!jobs.has(id)) return;
+      if (!job.sender.isDestroyed()) job.sender.send('compare:event', { id, kind: 'error', error: code ? 'Comparison worker exited.' : 'Comparison stopped.' });
+      finishJob(id);
+    });
+  }
+}
+const externalPaths = (argv, baseDirectory = process.cwd()) => argv.slice(1).filter(value => !value.startsWith('-')).map(value => path.resolve(baseDirectory, value)).filter(value => fs.existsSync(value) && value !== path.resolve(app.getAppPath()));
+const initialOpenPaths = externalPaths(process.argv, process.cwd());
 let pendingOpenRequests = [];
 let startupOpenRequestsTaken = false;
 const firstInstance = app.requestSingleInstanceLock();
@@ -59,6 +139,11 @@ async function dispatchOpenPaths(paths) {
   };
   if (target.webContents.isLoading()) target.webContents.once('did-finish-load', send); else send();
 }
+function flushPendingOpenRequests() {
+  if (!startupOpenRequestsTaken || !pendingOpenRequests.length) return;
+  const requests = pendingOpenRequests.splice(0);
+  for (const request of requests) void dispatchOpenPaths(request.paths).catch(error => console.error('[external open]', error));
+}
 const openPathBatcher = createOpenPathBatcher((paths, mode) => {
   if (!startupOpenRequestsTaken) {
     pendingOpenRequests.push({ paths, reuseExisting: mode === 'reuse' });
@@ -67,8 +152,8 @@ const openPathBatcher = createOpenPathBatcher((paths, mode) => {
   void dispatchOpenPaths(paths).catch(error => console.error('[external open]', error));
 });
 openPathBatcher.add(initialOpenPaths, 'new');
-app.on('second-instance', (_event, argv) => {
-  const paths = externalPaths(argv);
+app.on('second-instance', (_event, argv, workingDirectory) => {
+  const paths = externalPaths(argv, workingDirectory);
   if (!paths.length) return;
   openPathBatcher.add(paths);
 });
@@ -97,7 +182,7 @@ function createWindow(initialTab = null, position = null) {
     ...(position ? { x: Math.round(position.x - 180), y: Math.round(position.y - 18) } : {}),
     frame: false, backgroundColor: '#181818', title: 'Norways Diff Checker',
     icon: path.join(__dirname, '../assets/app-icon.png'),
-    webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false }
+    webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: true }
   });
   if (!mainWindow) mainWindow = win;
   const senderId = win.webContents.id;
@@ -110,8 +195,7 @@ function createWindow(initialTab = null, position = null) {
     windowState.delete(senderId);
     for (const [id, job] of jobs) {
       if (job.senderId !== senderId) continue;
-      job.worker.terminate();
-      jobs.delete(id);
+      cancelJob(id, senderId);
     }
     let removedDrag = false;
     for (const [token, drag] of tabDrags) {
@@ -120,18 +204,32 @@ function createWindow(initialTab = null, position = null) {
       removedDrag = true;
     }
     if (removedDrag) broadcastTabDragState(null);
-    if (mainWindow === win) mainWindow = BrowserWindow.getAllWindows()[0] || null;
+    if (mainWindow === win) {
+      mainWindow = BrowserWindow.getAllWindows()[0] || null;
+      if (mainWindow) {
+        const nextId = mainWindow.webContents.id;
+        const state = windowState.get(nextId);
+        if (state) windowState.set(nextId, { ...state, primary: true });
+        if (!mainWindow.webContents.isDestroyed()) mainWindow.webContents.send('window:primary-state', true);
+      }
+    }
   });
   win.webContents.on('console-message', details => {
     if (details.level === 'warning' || details.level === 'error') console.error('[renderer]', details.message);
   });
+  win.webContents.on('will-navigate', (event, url) => {
+    if (url !== rendererUrl) event.preventDefault();
+  });
+  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  win.webContents.on('did-finish-load', flushPendingOpenRequests);
   win.webContents.on('did-fail-load', (_event, code, description) => console.error('[renderer] load failure', code, description));
-  win.loadFile(path.join(__dirname, '../dist-ui/index.html'));
+  win.loadFile(rendererPath);
   return win;
 }
 if (firstInstance) app.whenReady().then(() => {
-  if (hasWindowsContextMenu() && !isWindowsContextMenuInstalled()) {
-    setWindowsContextMenu(true, { executablePath: process.execPath, appPath: app.getAppPath(), packaged: app.isPackaged });
+  const shellOptions = { executablePath: process.execPath, appPath: app.getAppPath(), packaged: app.isPackaged };
+  if (hasWindowsContextMenu() && !isWindowsContextMenuInstalled(shellOptions)) {
+    setWindowsContextMenu(true, shellOptions);
   }
   createWindow();
   app.on('activate', () => { if (!BrowserWindow.getAllWindows().length) createWindow(); });
@@ -139,25 +237,25 @@ if (firstInstance) app.whenReady().then(() => {
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
-ipcMain.handle('window:minimize', event => BrowserWindow.fromWebContents(event.sender)?.minimize());
-ipcMain.handle('window:toggle-maximize', event => {
+handle('window:minimize', event => BrowserWindow.fromWebContents(event.sender)?.minimize());
+handle('window:toggle-maximize', event => {
   const win = BrowserWindow.fromWebContents(event.sender);
   if (!win) return false;
   if (win.isMaximized()) win.unmaximize(); else win.maximize();
   return win.isMaximized();
 });
-ipcMain.handle('window:is-maximized', event => BrowserWindow.fromWebContents(event.sender)?.isMaximized() ?? false);
-ipcMain.handle('window:close', event => BrowserWindow.fromWebContents(event.sender)?.close());
-ipcMain.handle('window:bootstrap', event => {
+handle('window:is-maximized', event => BrowserWindow.fromWebContents(event.sender)?.isMaximized() ?? false);
+handle('window:close', event => BrowserWindow.fromWebContents(event.sender)?.close());
+handle('window:bootstrap', event => {
   const state = windowState.get(event.sender.id) || { initialTab: null, primary: false };
   windowState.set(event.sender.id, { ...state, initialTab: null });
   return state;
 });
-ipcMain.on('window:active-tab', (event, activeTab) => {
+on('window:active-tab', (event, activeTab) => {
   const state = windowState.get(event.sender.id);
   if (state) windowState.set(event.sender.id, { ...state, activeTab });
 });
-ipcMain.on('tabs:begin-drag', (event, tab, tabCount) => {
+on('tabs:begin-drag', (event, tab, tabCount) => {
   const token = randomUUID();
   tabDrags.set(token, {
     senderId: event.sender.id,
@@ -167,10 +265,10 @@ ipcMain.on('tabs:begin-drag', (event, tab, tabCount) => {
   broadcastTabDragState({ id: tab.id, title: tab.title, type: tab.type });
   event.returnValue = token;
 });
-ipcMain.handle('tabs:end-drag', (_event, token) => {
+handle('tabs:end-drag', (_event, token) => {
   if (tabDrags.delete(token)) broadcastTabDragState(null);
 });
-ipcMain.handle('tabs:accept-drag', (event, token) => {
+handle('tabs:accept-drag', (event, token) => {
   const drag = tabDrags.get(token);
   if (!drag || drag.senderId === event.sender.id) return null;
   tabDrags.delete(token);
@@ -179,7 +277,7 @@ ipcMain.handle('tabs:accept-drag', (event, token) => {
   if (source && !source.isDestroyed()) source.webContents.send('tabs:remove-transferred', drag.tab.id, drag.closeSource);
   return drag.tab;
 });
-ipcMain.handle('tabs:detach', (event, token, position) => {
+handle('tabs:detach', (event, token, position) => {
   const drag = tabDrags.get(token);
   if (!drag || drag.senderId !== event.sender.id) return false;
   tabDrags.delete(token);
@@ -207,7 +305,7 @@ async function describe(inputPath) {
     try { await file.read(magic, 0, magic.length, 0); } finally { await file.close(); }
     if (magic.subarray(0, 5).toString() === '%PDF-') types = ['documents', 'images'];
     else if (magic.subarray(0, 8).equals(Buffer.from('89504e470d0a1a0a', 'hex')) || magic.subarray(0, 3).equals(Buffer.from('ffd8ff', 'hex')) || magic.subarray(0, 4).toString() === 'GIF8' || (magic.subarray(0, 4).toString() === 'RIFF' && magic.subarray(8, 12).toString() === 'WEBP') || magic.subarray(4, 12).toString().startsWith('ftypheic')) types = ['images'];
-    else if (magic.subarray(0, 4).toString() === 'PK\u0003\u0004') {
+    else if (magic.subarray(0, 4).toString() === 'PK\u0003\u0004' && stat.size <= maxProbeBytes) {
       const JSZip = require('jszip');
       const zip = await JSZip.loadAsync(await fsp.readFile(absolute)).catch(() => null);
       if (zip?.file('word/document.xml')) types = ['documents'];
@@ -221,94 +319,71 @@ async function describe(inputPath) {
   if (!types.length) throw new Error('Unsupported input: ' + path.basename(absolute));
   return { id: randomUUID(), name: path.basename(absolute), path: absolute, size: stat.size, types: [...new Set(types)] };
 }
-ipcMain.handle('inputs:describe', (_event, paths) => Promise.all(paths.map(describe)));
-ipcMain.handle('inputs:startup-requests', async () => {
+handle('inputs:describe', (_event, paths) => Promise.all(paths.map(describe)));
+handle('inputs:startup-requests', async () => {
   await openPathBatcher.whenIdle();
   startupOpenRequestsTaken = true;
   return pendingOpenRequests.splice(0);
 });
-ipcMain.handle('inputs:browse', async (event, type) => {
+handle('inputs:browse', async (event, type) => {
   const result = await dialog.showOpenDialog(BrowserWindow.fromWebContents(event.sender), {
     properties: type === 'folders' ? ['openDirectory','multiSelections'] : ['openFile','multiSelections']
   });
   return result.canceled ? [] : Promise.all(result.filePaths.map(describe));
 });
-ipcMain.handle('inputs:text', (_event, input) => input.text !== undefined ? String(input.text) : fsp.readFile(input.path, 'utf8'));
-ipcMain.handle('inputs:preview', async (_event, input) => {
+handle('inputs:text', (_event, input) => input.text !== undefined ? String(input.text) : fsp.readFile(input.path, 'utf8'));
+handle('inputs:preview', async (_event, input) => {
   if (!input.path || path.extname(input.path).toLowerCase() === '.pdf') return null;
+  const stat = await fsp.stat(input.path);
+  if (stat.size > maxProbeBytes) throw new Error('Image preview is limited to 256 MB files.');
   const source = path.extname(input.path).toLowerCase() === '.heic'
     ? Buffer.from(await require('heic-convert')({ buffer: await fsp.readFile(input.path), format: 'PNG' })) : input.path;
-  const bytes = await require('sharp')(source, { pages: 1 }).resize({ width: 1800, height: 1800, fit: 'inside', withoutEnlargement: true }).png().toBuffer();
+  const bytes = await require('sharp')(source, { pages: 1, limitInputPixels: maxPreviewPixels }).resize({ width: 1800, height: 1800, fit: 'inside', withoutEnlargement: true }).png().toBuffer();
   return 'data:image/png;base64,' + bytes.toString('base64');
 });
-ipcMain.handle('compare:start', (event, request) => {
-  const id = randomUUID();
-  const worker = new Worker(path.join(__dirname, 'compare-worker.js'), { workerData: request });
-  jobs.set(id, { worker, senderId: event.sender.id });
-  worker.on('message', message => {
-    if (!jobs.has(id)) return;
-    if (message.kind === 'result' && request.left?.path && request.right?.path) {
-      const recent = { type: request.type, left: request.left.originalPath || request.left.path, right: request.right.originalPath || request.right.path };
-      const next = settings();
-      next.recentCompares = next.recentCompareLimit > 0
-        ? [recent, ...next.recentCompares.filter(item => item.type !== recent.type || item.left !== recent.left || item.right !== recent.right)].slice(0, next.recentCompareLimit)
-        : [];
-      saveSettings(next);
-    }
-    if (!event.sender.isDestroyed()) event.sender.send('compare:event', { id, ...message });
-    if (message.kind === 'result' || message.kind === 'error') jobs.delete(id);
-  });
-  worker.on('error', error => {
-    jobs.delete(id);
-    if (!event.sender.isDestroyed()) event.sender.send('compare:event', { id, kind: 'error', error: error.message });
-  });
-  worker.on('exit', code => {
-    if (jobs.delete(id) && !event.sender.isDestroyed()) event.sender.send('compare:event', { id, kind: 'error', error: code ? 'Comparison worker exited.' : 'Comparison stopped.' });
-  });
+handle('compare:start', (event, request) => {
+  const id = String(request.id || '');
+  if (!/^[0-9a-f-]{36}$/i.test(id) || jobs.has(id)) throw new Error('Invalid comparison job ID.');
+  jobs.set(id, { worker: null, request: { ...request, id: undefined }, sender: event.sender, senderId: event.sender.id, started: false, cancelTimer: null });
+  startQueuedJobs();
   return id;
 });
-ipcMain.handle('compare:cancel', (_event, id) => {
-  const job = jobs.get(id);
-  if (!job) return;
-  jobs.delete(id);
-  job.worker.postMessage({ kind: 'cancel' });
-  setTimeout(() => job.worker.terminate(), 1000).unref();
-});
-ipcMain.handle('settings:get', () => settings());
-ipcMain.handle('settings:set', (_event, patch) => {
+handle('compare:cancel', (event, id) => cancelJob(id, event.sender.id));
+handle('settings:get', () => settings());
+handle('settings:set', (_event, patch) => {
   const next = { ...settings(), ...patch };
   next.recentCompareLimit = recentCompareLimit(next.recentCompareLimit);
   next.recentCompares = next.recentCompares.slice(0, next.recentCompareLimit);
   saveSettings(next);
   return next;
 });
-ipcMain.handle('shell-context-menu:status', () => isWindowsContextMenuInstalled());
-ipcMain.handle('shell-context-menu:set', (_event, enabled) => {
+handle('shell-context-menu:status', () => isWindowsContextMenuInstalled({ executablePath: process.execPath, appPath: app.getAppPath(), packaged: app.isPackaged }));
+handle('shell-context-menu:set', (_event, enabled) => {
   setWindowsContextMenu(Boolean(enabled), { executablePath: process.execPath, appPath: app.getAppPath(), packaged: app.isPackaged });
-  return isWindowsContextMenuInstalled();
+  return isWindowsContextMenuInstalled({ executablePath: process.execPath, appPath: app.getAppPath(), packaged: app.isPackaged });
 });
-ipcMain.handle('app-data:path', () => dataDir);
-ipcMain.handle('app-data:open', async () => {
+handle('app-data:path', () => dataDir);
+handle('app-data:open', async () => {
   const error = await shell.openPath(dataDir);
   if (error) throw new Error(error);
 });
-ipcMain.handle('external:open-url', async (_event, value) => {
+handle('external:open-url', async (_event, value) => {
   const url = new URL(String(value));
   if (url.protocol !== 'https:') throw new Error('Only secure web links can be opened.');
   await shell.openExternal(url.toString());
 });
-ipcMain.handle('app:check-for-updates', () => ({ status: 'up-to-date' }));
-ipcMain.handle('clipboard:write-text', (_event, text) => clipboard.writeText(String(text)));
-ipcMain.handle('export:save', async (event, request) => {
+handle('app:check-for-updates', () => ({ status: 'up-to-date' }));
+handle('clipboard:write-text', (_event, text) => clipboard.writeText(String(text)));
+handle('export:save', async (event, request) => {
   const result = await dialog.showSaveDialog(BrowserWindow.fromWebContents(event.sender), { defaultPath: request.name, filters: request.filters });
   if (result.canceled || !result.filePath) return null;
   await fsp.writeFile(result.filePath, request.base64 ? Buffer.from(request.content, 'base64') : request.content);
   return result.filePath;
 });
-ipcMain.handle('export:image-view', async (event, { title, result, options, toClipboard, flickerRight }) => {
+handle('export:image-view', async (event, { title, result, options, toClipboard, flickerRight }) => {
   const png = await require('./exporters').imageViewFromComparison({ result, options, flickerRight });
   if (toClipboard) {
-    await clipboard.write([new ClipboardItem({ 'image/png': new Blob([png], { type: 'image/png' }) })]);
+    clipboard.writeImage(nativeImage.createFromBuffer(png));
     return 'clipboard';
   }
   const saved = await dialog.showSaveDialog(BrowserWindow.fromWebContents(event.sender), { defaultPath: title + '.png', filters: [{ name: 'PNG', extensions: ['png'] }] });
@@ -316,7 +391,7 @@ ipcMain.handle('export:image-view', async (event, { title, result, options, toCl
   await fsp.writeFile(saved.filePath, png);
   return saved.filePath;
 });
-ipcMain.handle('export:text', async (event, { title, leftText, rightText, leftName, rightName, kind, fenced, toClipboard }) => {
+handle('export:text', async (event, { title, leftText, rightText, leftName, rightName, kind, fenced, toClipboard }) => {
   const text = require('./exporters').textFromComparison({ leftText, rightText, leftName, rightName, kind, fenced });
   if (toClipboard) {
     await clipboard.writeText(text);
@@ -331,14 +406,14 @@ ipcMain.handle('export:text', async (event, { title, leftText, rightText, leftNa
   await fsp.writeFile(saved.filePath, text);
   return saved.filePath;
 });
-ipcMain.handle('export:pdf', async (event, { title, lines = [], layout, leftText, rightText, chunks = [], imageView }) => {
+handle('export:pdf', async (event, { title, lines = [], layout, leftText, rightText, chunks = [], imageView }) => {
   const saved = await dialog.showSaveDialog(BrowserWindow.fromWebContents(event.sender), { defaultPath: title + '.pdf', filters: [{ name: 'PDF', extensions: ['pdf'] }] });
   if (saved.canceled || !saved.filePath) return null;
   const image = imageView ? await require('./exporters').imageViewFromComparison(imageView) : undefined;
   await fsp.writeFile(saved.filePath, await require('./exporters').pdfFromComparison({ title, lines, layout, leftText, rightText, chunks, imageView: image }));
   return saved.filePath;
 });
-ipcMain.handle('export:docx', async (event, { title, chunks, tracked }) => {
+handle('export:docx', async (event, { title, chunks, tracked }) => {
   const result = await dialog.showSaveDialog(BrowserWindow.fromWebContents(event.sender), {
     defaultPath: title + (tracked ? '-tracked' : '-redline') + '.docx',
     filters: [{ name: 'Word document', extensions: ['docx'] }]

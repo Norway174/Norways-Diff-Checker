@@ -30,6 +30,11 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.on('window:maximized-state', listener);
     return () => ipcRenderer.removeListener('window:maximized-state', listener);
   },
+  onPrimaryWindowChange(callback) {
+    const listener = (_event, state) => callback(state);
+    ipcRenderer.on('window:primary-state', listener);
+    return () => ipcRenderer.removeListener('window:primary-state', listener);
+  },
   takeDroppedPaths() { const paths = droppedPaths; droppedPaths = []; return paths; },
   describeInputs: call('inputs:describe'),
   takeStartupOpenRequests: call('inputs:startup-requests'),

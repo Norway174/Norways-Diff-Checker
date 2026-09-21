@@ -25,6 +25,7 @@ input:focus, select:focus, textarea:focus { border-color: #1686d0; }
 body.detaching-tab { cursor: alias; }
 body.detaching-tab .app { cursor: alias; }
 .tab.selected { background: #1c1c1e; box-shadow: inset 0 2px #007acc; }
+.tab:focus-visible { outline: 1px solid #72b8ea; outline-offset: -2px; }
 .tab-symbol { color: #72b8ea; font-size: 18px; }
 .tab-name { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .tab-close, .new-tab { height: 25px; min-width: 25px; padding: 0; border: 0; background: transparent; font-size: 18px; }

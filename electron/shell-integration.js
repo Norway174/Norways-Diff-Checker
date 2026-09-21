@@ -22,12 +22,13 @@ function deleteRegistryValue(key, name, spawn = spawnSync) {
   if (query.status === 0) runRegistry(['delete', key, '/v', name, '/f'], spawn);
 }
 
-function isWindowsContextMenuInstalled({ spawn = spawnSync } = {}) {
+function isWindowsContextMenuInstalled({ executablePath, appPath, packaged, spawn = spawnSync } = {}) {
   if (process.platform !== 'win32') return false;
+  const expectedCommand = executablePath ? commandValue(executablePath, appPath, packaged) : null;
   return menuEntries.every(entry => {
     const command = spawn('reg.exe', ['query', entry.key + '\\command', '/ve'], { encoding: 'utf8', windowsHide: true });
     if (command.error) throw command.error;
-    if (command.status !== 0) return false;
+    if (command.status !== 0 || (expectedCommand && !(command.stdout || '').includes(expectedCommand))) return false;
     const multiSelect = spawn('reg.exe', ['query', entry.key, '/v', 'MultiSelectModel'], { encoding: 'utf8', windowsHide: true });
     if (multiSelect.error) throw multiSelect.error;
     return multiSelect.status === 0 && /\bPlayer\b/i.test(multiSelect.stdout || '');

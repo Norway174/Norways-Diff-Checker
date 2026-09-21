@@ -64,7 +64,7 @@ export type CompareTab = {
 };
 export type RecentCompare = { type: Mode; left: string; right: string };
 export type Preferences = { restoreTabs: boolean; recentCompareLimit: number; recentCompares: RecentCompare[]; lastImageView?: string; tabs?: CompareTab[]; activeTabId?: string };
-export type CompareEvent = { id: string; kind: 'progress' | 'result' | 'error'; value?: number; phase?: string; result?: any; error?: string };
+export type CompareEvent = { id: string; kind: 'progress' | 'result' | 'error' | 'cancelled'; value?: number; phase?: string; result?: any; error?: string };
 export type AppApi = {
   minimizeWindow(): Promise<void>; toggleMaximizeWindow(): Promise<boolean>; isWindowMaximized(): Promise<boolean>; closeWindow(): Promise<void>;
   takeWindowBootstrap(): Promise<{ initialTab: CompareTab | null; primary: boolean }>;
@@ -76,6 +76,7 @@ export type AppApi = {
   onRemoveTransferredTab(callback: (id: string, closeWindow: boolean) => void): () => void;
   onTabDragState(callback: (preview: Pick<CompareTab, 'id' | 'title' | 'type'> | null) => void): () => void;
   onWindowMaximizedChange(callback: (value: boolean) => void): () => void;
+  onPrimaryWindowChange(callback: (value: boolean) => void): () => void;
   takeDroppedPaths(): string[];
   describeInputs(paths: string[]): Promise<Input[]>;
   takeStartupOpenRequests(): Promise<{ paths: string[]; reuseExisting: boolean }[]>;
@@ -83,7 +84,7 @@ export type AppApi = {
   browseInputs(type: Mode): Promise<Input[]>;
   readText(input: Input): Promise<string>;
   preview(input: Input): Promise<string | null>;
-  startCompare(request: { type: Mode; left: Input; right: Input; options: Options }): Promise<string>;
+  startCompare(request: { id: string; type: Mode; left: Input; right: Input; options: Options }): Promise<string>;
   cancelCompare(id: string): Promise<void>;
   onCompareEvent(callback: (event: CompareEvent) => void): () => void;
   getSettings(): Promise<Preferences>; setSettings(patch: Partial<Preferences>): Promise<Preferences>;
