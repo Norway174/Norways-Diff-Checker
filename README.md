@@ -1,6 +1,6 @@
 # Norways Diff Checker
 
-A Windows desktop workspace for comparing text, images, documents, spreadsheets, and folders. It uses a frameless Electron window with isolated preload access, a React/TypeScript UI, and worker threads for comparison jobs. Comparisons run locally.
+A free, open sourced and fully offline & local Diff Checker. Supporting Images, Text, Documents and even Folder comparisons.
 
 ## App preview
 
