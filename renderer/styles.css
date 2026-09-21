@@ -19,7 +19,6 @@ button { font: inherit; cursor: pointer; }
 .window-control { width: 46px; height: 100%; min-height: 0; padding: 0; border: 0; border-radius: 0; background: transparent; color: var(--text); }
 .window-control:hover { background: #4a4a4a; }
 .window-control.window-close:hover { background: #c42b1c; }
-.material-icon { display: block; width: 18px; height: 18px; margin: auto; filter: invert(.8); pointer-events: none; }
 .workspace { min-width: 0; min-height: 0; background: #151515; }
 
 @media (max-width: 1040px) {

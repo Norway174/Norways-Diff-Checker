@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { Fragment, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import * as XLSX from 'xlsx';
 import hljs from 'highlight.js/lib/core';
@@ -10,8 +10,10 @@ import xml from 'highlight.js/lib/languages/xml';
 import css from 'highlight.js/lib/languages/css';
 import bash from 'highlight.js/lib/languages/bash';
 import sql from 'highlight.js/lib/languages/sql';
+import 'material-symbols/outlined.css';
 import type { CompareEvent, CompareTab, Input, Mode, Options, Preferences } from './types';
 import './styles.css';
+declare const __APP_COMMIT__: string;
 for (const [name, grammar] of Object.entries({ javascript, typescript, json, python, xml, css, bash, sql })) hljs.registerLanguage(name, grammar);
 const languageFor = (input: Input | null) => {
   const ext = input?.name.split('.').at(-1)?.toLowerCase();
@@ -19,23 +21,30 @@ const languageFor = (input: Input | null) => {
 };
 
 const modes: { id: Mode; label: string; icon: string; hint: string }[] = [
-  { id: 'text', label: 'Text', icon: '¶', hint: 'Words, code and logs' },
-  { id: 'images', label: 'Images', icon: '▧', hint: 'Pixels, OCR and metadata' },
-  { id: 'documents', label: 'Documents', icon: '▤', hint: 'PDF, Word and presentations' },
-  { id: 'excel', label: 'Excel', icon: '▦', hint: 'Cells, sheets and formulas' },
-  { id: 'folders', label: 'Folders', icon: '▣', hint: 'Recursive file trees' }
+  { id: 'text', label: 'Text', icon: 'text_fields', hint: 'Words, code and logs' },
+  { id: 'images', label: 'Images', icon: 'image', hint: 'Pixels, OCR and metadata' },
+  { id: 'documents', label: 'Documents', icon: 'description', hint: 'PDF, Word and presentations' },
+  { id: 'excel', label: 'Excel', icon: 'table_view', hint: 'Cells, sheets and formulas' },
+  { id: 'folders', label: 'Folders', icon: 'folder', hint: 'Recursive file trees' }
 ];
+const imageViews = ['split','slider','fade','flicker','subtract','highlight','ocr','rich-ocr','details'] as const;
+type ImageViewMode = typeof imageViews[number];
+const imageViewOrDefault = (value: unknown): ImageViewMode => typeof value === 'string' && imageViews.includes(value as ImageViewMode) ? value as ImageViewMode : 'split';
+const revealInternalMaximum = 101;
+const percentageMaximum = 100;
+const revealToPercentage = (value: number) => value / revealInternalMaximum * percentageMaximum;
+const percentageToReveal = (value: number) => value / percentageMaximum * revealInternalMaximum;
 const defaults = (): Options => ({
-  view: 'split', precision: 'smart', syntaxHighlight: true, ignoreCase: false, ignoreWhitespace: false, ignoreRules: [],
-  wrap: true, syncScroll: true, hideUnchanged: false, threshold: 24, minRegionSize: 1, regionGap: 0, autoAlign: false,
+  view: 'split', splitOrientation: 'vertical', precision: 'smart', syntaxHighlight: true, ignoreCase: false, ignoreWhitespace: false, ignoreRules: [],
+  wrap: true, syncScroll: true, syncLineHeights: false, hideUnchanged: false, threshold: 24, minRegionSize: 1, regionGap: 0, autoAlign: false,
   offsetX: 0, offsetY: 0, scale: 100, rotation: 0, perspectiveX: 0, perspectiveY: 0, flipX: false, flipY: false,
-  opacity: 50, flickerMs: 500, ocr: false, page: 1, rightPageOrder: [],
+  opacity: 50, sliderNoOverlap: false, flickerMs: 500, transitionMs: 500, ocr: false, page: 1, rightPageOrder: [],
   leftSheet: '', rightSheet: '', formulas: false, alignRows: true, alignColumns: true, hideRows: false, hideColumns: false, dateOrder: 'none',
   sortColumn: '', exclusions: ['node_modules', '.git'], compareMetadata: false
 });
-const newTab = (type: Mode, left: Input | null = null, right: Input | null = null, available: Input[] = []): CompareTab => ({
+const newTab = (type: Mode, left: Input | null = null, right: Input | null = null, available: Input[] = [], imageView: ImageViewMode = 'split'): CompareTab => ({
   id: crypto.randomUUID(), title: modes.find(mode => mode.id === type)?.label || type, type,
-  left, right, available, options: defaults(), result: null, busy: false, progress: 0, phase: '', dirty: false
+  left, right, available, options: { ...defaults(), ...(type === 'images' ? { view: imageView, ...(imageView === 'slider' ? { opacity: percentageToReveal(50) } : {}) } : {}) }, result: null, busy: false, progress: 0, phase: ''
 });
 function decidedChunks(chunks: any[], decisions: CompareTab['decisions']) {
   if (!decisions) return chunks;
@@ -57,34 +66,247 @@ function compatible(inputs: Input[], preferred?: Mode): Mode | null {
   if (inputs.length === 2 && inputs.some(input => input.types.includes('images') && !input.types.includes('documents')) && inputs.every(input => input.types.includes('images'))) return 'images';
   return order.find(type => inputs.every(input => input.types.includes(type))) || null;
 }
-function humanError(error: unknown) { return error instanceof Error ? error.message : String(error); }
-function IconButton({ name, title, onClick, className = '' }: { name: string; title: string; onClick: () => void; className?: string }) {
-  return <button className={className} title={title} aria-label={title} onClick={onClick}><img src={'./icons/' + name + '.svg'} alt="" /></button>;
+function externalTypes(input: Input): Mode[] {
+  const specific = input.types.filter(type => type !== 'text');
+  return specific.length ? specific : ['text'];
 }
-function Titlebar({ tabs, active, onSelect, onNew, onClose, onReorder, onSettings, onSave, onAppClose }: {
-  tabs: CompareTab[]; active: string | null; onSelect: (id: string) => void; onNew: () => void; onClose: (id: string) => void; onReorder: (from: string, to: string) => void;
-  onSettings: () => void; onSave: () => void; onAppClose: () => void;
+function humanError(error: unknown) { return error instanceof Error ? error.message : String(error); }
+function MaterialIcon({ name, className = '' }: { name: string; className?: string }) {
+  return <span className={'material-symbols-outlined ' + className} aria-hidden="true">{name}</span>;
+}
+function IconButton({ name, title, onClick, className = '' }: { name: string; title: string; onClick: () => void; className?: string }) {
+  return <button className={className} title={title} aria-label={title} onClick={onClick}><MaterialIcon name={name} /></button>;
+}
+function DraggableDialog({ title, eyebrow, icon, className = '', onClose, children }: {
+  title: string; eyebrow: string; icon: string; className?: string; onClose: () => void; children: React.ReactNode;
+}) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const dragRef = useRef<{ pointerId: number; offsetX: number; offsetY: number } | null>(null);
+  const [position, setPosition] = useState<{ x: number; y: number } | null>(null);
+  const clampPosition = (x: number, y: number) => {
+    const dialog = dialogRef.current;
+    const backdrop = dialog?.parentElement;
+    if (!dialog || !backdrop) return { x, y };
+    return {
+      x: Math.max(10, Math.min(x, backdrop.clientWidth - dialog.offsetWidth - 10)),
+      y: Math.max(10, Math.min(y, backdrop.clientHeight - dialog.offsetHeight - 10))
+    };
+  };
+  useEffect(() => {
+    const handleResize = () => setPosition(current => current ? clampPosition(current.x, current.y) : null);
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [onClose]);
+  return <div className="modal-backdrop"><div
+    ref={dialogRef}
+    className={'modal dialog-window ' + className}
+    role="dialog"
+    aria-modal="true"
+    aria-label={title}
+    style={position ? { left: position.x, top: position.y } : undefined}
+  >
+    <header className="dialog-titlebar" onDoubleClick={() => setPosition(null)} onPointerDown={event => {
+      if (event.button !== 0 || (event.target as HTMLElement).closest('button')) return;
+      const bounds = dialogRef.current?.getBoundingClientRect();
+      if (!bounds) return;
+      dragRef.current = { pointerId: event.pointerId, offsetX: event.clientX - bounds.left, offsetY: event.clientY - bounds.top };
+      event.currentTarget.setPointerCapture(event.pointerId);
+      setPosition({ x: bounds.left, y: bounds.top - 36 });
+    }} onPointerMove={event => {
+      const drag = dragRef.current;
+      if (!drag || drag.pointerId !== event.pointerId) return;
+      setPosition(clampPosition(event.clientX - drag.offsetX, event.clientY - drag.offsetY - 36));
+    }} onPointerUp={event => {
+      if (dragRef.current?.pointerId !== event.pointerId) return;
+      dragRef.current = null;
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }} onPointerCancel={() => { dragRef.current = null; }}>
+      <span className="dialog-app-icon"><MaterialIcon name={icon} /></span>
+      <span className="dialog-title"><strong>{title}</strong><small>{eyebrow}</small></span>
+      <IconButton name="close" title={'Close ' + title} className="dialog-close" onClick={onClose} />
+    </header>
+    <div className="dialog-body">{children}</div>
+  </div></div>;
+}
+function ScrubbableNumber({ value, min, max, step = 1, onChange }: {
+  value: number; min: number; max: number; step?: number; onChange: (value: number) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(String(Math.round(value * 1000) / 1000));
+  const elementRef = useRef<HTMLInputElement>(null);
+  const dragging = useRef<{ pointerId: number; left: number; width: number } | null>(null);
+  const stepPrecision = Math.max(0, String(step).split('.')[1]?.length || 0);
+  const displayValue = Number(value.toFixed(stepPrecision));
+  const progress = Math.max(0, Math.min(100, (value - min) / Math.max(1, max - min) * 100));
+  useEffect(() => { if (!editing) setDraft(String(displayValue)); }, [displayValue, editing]);
+  useEffect(() => {
+    if (!editing) return;
+    elementRef.current?.focus();
+    elementRef.current?.select();
+  }, [editing]);
+  const clamp = (next: number) => Math.max(min, Math.min(max, next));
+  const scrub = (clientX: number) => {
+    const drag = dragging.current;
+    if (!drag) return;
+    const ratio = Math.max(0, Math.min(1, (clientX - drag.left) / Math.max(1, drag.width)));
+    const next = min + Math.round((ratio * (max - min)) / step) * step;
+    onChange(clamp(Number(next.toFixed(10))));
+  };
+  const commit = () => {
+    const next = Number(draft);
+    if (Number.isFinite(next)) onChange(clamp(next));
+    else setDraft(String(displayValue));
+    window.getSelection()?.removeAllRanges();
+    setEditing(false);
+  };
+  const cancel = () => {
+    setDraft(String(displayValue));
+    window.getSelection()?.removeAllRanges();
+    setEditing(false);
+  };
+  return <span
+    className={'scrubbable-number' + (editing ? ' editing' : '')}
+    style={{ '--scrub-progress': `${progress}%` } as React.CSSProperties}
+    title={editing ? 'Type a value' : 'Drag to adjust; double-click to type'}
+    onDoubleClick={() => setEditing(true)}
+    onPointerDown={event => {
+      if (editing || event.detail > 1) return;
+      event.preventDefault();
+      const bounds = event.currentTarget.getBoundingClientRect();
+      dragging.current = { pointerId: event.pointerId, left: bounds.left, width: bounds.width };
+      event.currentTarget.setPointerCapture(event.pointerId);
+      scrub(event.clientX);
+    }}
+    onPointerMove={event => { if (dragging.current?.pointerId === event.pointerId) scrub(event.clientX); }}
+    onPointerUp={event => {
+      if (dragging.current?.pointerId !== event.pointerId) return;
+      dragging.current = null;
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }}
+    onPointerCancel={() => { dragging.current = null; }}
+  ><input
+      ref={elementRef}
+      type="number"
+      className="scrubbable-number-input"
+      min={min}
+      max={max}
+      step={step}
+      value={editing ? draft : displayValue}
+      readOnly={!editing}
+      style={{ '--edit-width': `${Math.max(3, String(editing ? draft : displayValue).length + 1)}ch` } as React.CSSProperties}
+      onChange={event => setDraft(event.target.value)}
+      onBlur={() => { if (editing) commit(); }}
+      onKeyDown={event => {
+        if (!editing && (event.key === 'Enter' || event.key === 'F2')) { event.preventDefault(); setEditing(true); }
+        else if (editing && event.key === 'Enter') { event.preventDefault(); commit(); }
+        else if (editing && event.key === 'Escape') { event.preventDefault(); cancel(); }
+      }}
+    /></span>;
+}
+const tabDragType = 'application/x-norways-tab';
+const tabTokenType = 'application/x-norways-tab-token';
+function Titlebar({ tabs, active, onSelect, onNew, onClose, onReorder, onReceive, onSettings, onAppClose }: {
+  tabs: CompareTab[]; active: string | null; onSelect: (id: string) => void; onNew: () => void; onClose: (id: string) => void; onReorder: (from: string, to: string, after: boolean) => void;
+  onReceive: (tab: CompareTab, to: string | null, after: boolean) => void;
+  onSettings: () => void; onAppClose: () => void;
 }) {
   const [maximized, setMaximized] = useState(false);
+  const [dragPreview, setDragPreview] = useState<Pick<CompareTab, 'id' | 'title' | 'type'> | null>(null);
+  const [ghostIndex, setGhostIndex] = useState<number | null>(null);
+  const dragToken = useRef('');
+  const localDragId = useRef('');
+  const dragPosition = useRef({ clientX: 0, clientY: 0, screenX: 0, screenY: 0 });
+  const tabsElement = useRef<HTMLElement>(null);
   useEffect(() => {
     window.api.isWindowMaximized().then(setMaximized);
-    return window.api.onWindowMaximizedChange(setMaximized);
+    const stopMaximized = window.api.onWindowMaximizedChange(setMaximized);
+    const stopDragState = window.api.onTabDragState(preview => {
+      setDragPreview(preview);
+      if (!preview) setGhostIndex(null);
+    });
+    return () => { stopMaximized(); stopDragState(); };
   }, []);
+  const updateGhost = (clientX: number) => {
+    if (localDragId.current || !dragPreview || tabs.some(tab => tab.id === dragPreview.id)) { setGhostIndex(null); return; }
+    const tabElements = Array.from(tabsElement.current?.querySelectorAll<HTMLElement>('.tab:not(.tab-ghost)') || []);
+    const index = tabElements.findIndex(element => clientX < element.getBoundingClientRect().left + element.clientWidth / 2);
+    setGhostIndex(index < 0 ? tabs.length : index);
+  };
+  const ghostTab = dragPreview && ghostIndex !== null ? <div className="tab tab-ghost" aria-hidden="true">
+    <MaterialIcon name={modes.find(mode => mode.id === dragPreview.type)?.icon || 'draft'} className="tab-symbol" /><span className="tab-name">{dragPreview.title}</span>
+  </div> : null;
   return <header className="titlebar">
     <div className="brand">NORWAYS DIFF CHECKER</div>
-    <nav className="tabs" aria-label="Comparison tabs">
-      {tabs.map(tab => <div key={tab.id} draggable className={'tab ' + (active === tab.id ? 'selected' : '')} onClick={() => onSelect(tab.id)}
-        onDragStart={event => { event.dataTransfer.setData('application/x-norways-tab', tab.id); event.dataTransfer.effectAllowed = 'move'; }}
-        onDragOver={event => { if (event.dataTransfer.types.includes('application/x-norways-tab')) event.preventDefault(); }}
-        onDrop={event => { const from = event.dataTransfer.getData('application/x-norways-tab'); if (from) { event.preventDefault(); event.stopPropagation(); onReorder(from, tab.id); } }}>
-        <span className="tab-symbol">{modes.find(mode => mode.id === tab.type)?.icon}</span><span className="tab-name">{tab.title}{tab.dirty ? ' •' : ''}</span>
-        <button className="tab-close" title="Close tab" onClick={event => { event.stopPropagation(); onClose(tab.id); }}>×</button>
-      </div>)}
-      <button className="new-tab" title="New comparison" onClick={onNew}>+</button>
+    <nav ref={tabsElement} className="tabs" aria-label="Comparison tabs"
+      onDragOver={event => { if (event.dataTransfer.types.includes(tabTokenType)) { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; document.body.classList.remove('detaching-tab'); updateGhost(event.clientX); } }}
+      onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setGhostIndex(null); }}
+      onDrop={async event => {
+        const token = event.dataTransfer.getData(tabTokenType);
+        if (!token) return;
+        event.preventDefault();
+        document.body.classList.remove('detaching-tab');
+        setGhostIndex(null);
+        const tab = await window.api.acceptTabDrag(token);
+        if (tab) {
+          const index = ghostIndex ?? tabs.length;
+          onReceive(tab, index < tabs.length ? tabs[index].id : null, false);
+        }
+      }}>
+      {tabs.map((tab, index) => <Fragment key={tab.id}>{ghostIndex === index && ghostTab}<div draggable className={'tab ' + (active === tab.id ? 'selected' : '')} onClick={() => onSelect(tab.id)}
+        onDragStart={event => {
+          localDragId.current = tab.id;
+          dragToken.current = window.api.beginTabDrag(tab, tabs.length);
+          event.dataTransfer.setData(tabDragType, tab.id);
+          event.dataTransfer.setData(tabTokenType, dragToken.current);
+          event.dataTransfer.effectAllowed = 'linkMove';
+        }}
+        onDragOver={event => {
+          if (!event.dataTransfer.types.includes(tabTokenType)) return;
+          event.preventDefault();
+          event.dataTransfer.dropEffect = 'move';
+          const from = localDragId.current;
+          if (from) onReorder(from, tab.id, event.clientX >= event.currentTarget.getBoundingClientRect().left + event.currentTarget.clientWidth / 2);
+        }}
+        onDrop={async event => {
+          const token = event.dataTransfer.getData(tabTokenType);
+          if (!token) return;
+          event.preventDefault(); event.stopPropagation();
+          const from = event.dataTransfer.getData(tabDragType);
+          if (from && tabs.some(item => item.id === from)) { await window.api.endTabDrag(token); return; }
+          const received = await window.api.acceptTabDrag(token);
+          setGhostIndex(null);
+          if (received) onReceive(received, tab.id, event.clientX >= event.currentTarget.getBoundingClientRect().left + event.currentTarget.clientWidth / 2);
+        }}
+        onDrag={event => {
+          if (event.clientX || event.clientY || event.screenX || event.screenY) dragPosition.current = { clientX: event.clientX, clientY: event.clientY, screenX: event.screenX, screenY: event.screenY };
+        }}
+        onDragEnd={event => {
+          const token = dragToken.current;
+          dragToken.current = '';
+          localDragId.current = '';
+          if (!token) return;
+          const position = event.clientX || event.clientY || event.screenX || event.screenY
+            ? { clientX: event.clientX, clientY: event.clientY, screenX: event.screenX, screenY: event.screenY }
+            : dragPosition.current;
+          const bounds = tabsElement.current?.getBoundingClientRect();
+          const insideTabs = !!bounds && position.clientX >= bounds.left && position.clientX <= bounds.right && position.clientY >= bounds.top && position.clientY <= bounds.bottom;
+          document.body.classList.remove('detaching-tab');
+          if (event.dataTransfer.dropEffect === 'move' || insideTabs) void window.api.endTabDrag(token);
+          else void window.api.detachTab(token, { x: position.screenX, y: position.screenY });
+        }}>
+        <MaterialIcon name={modes.find(mode => mode.id === tab.type)?.icon || 'draft'} className="tab-symbol" /><span className="tab-name">{tab.title}</span>
+        <button className="tab-close" title="Close tab" aria-label="Close tab" onClick={event => { event.stopPropagation(); onClose(tab.id); }}><MaterialIcon name="close" /></button>
+      </div></Fragment>)}
+      {ghostIndex === tabs.length && ghostTab}
+      <button className="new-tab" title="New comparison" aria-label="New comparison" onClick={onNew}><MaterialIcon name="add" /></button>
     </nav>
     <div className="title-actions">
-      <button onClick={onSave} title="Save comparisons">Save</button>
-      <button onClick={onSettings} title="Settings">⚙</button>
+      <button onClick={onSettings} title="Settings" aria-label="Settings"><MaterialIcon name="settings" /></button>
     </div>
     <div className="window-controls">
       <IconButton name="minimize" title="Minimize" className="window-control" onClick={() => void window.api.minimizeWindow()} />
@@ -93,19 +315,94 @@ function Titlebar({ tabs, active, onSelect, onNew, onClose, onReorder, onSetting
     </div>
   </header>;
 }
-function Welcome({ recent, onCreate, onLoad, onDismiss }: {
-  recent: Preferences['recentProjects']; onCreate: (type: Mode) => void; onLoad: (path: string) => void; onDismiss: () => void;
+function Welcome({ recent, recentEnabled, onCreate, onOpenRecent, onRemoveRecent, onNotice, onDismiss }: {
+  recent: Preferences['recentCompares']; recentEnabled: boolean; onCreate: (type: Mode) => void; onOpenRecent: (item: Preferences['recentCompares'][number]) => void;
+  onRemoveRecent: (item: Preferences['recentCompares'][number]) => void;
+  onNotice: (message: string, tone?: 'error' | 'success') => void; onDismiss: () => void;
 }) {
-  return <div className="modal-backdrop"><div className="welcome modal">
-    <div className="welcome-head"><div className="small-caps">NORWAYS DIFF CHECKER</div><h1>What would you like to compare?</h1><p>Choose a comparison or drop files and folders anywhere in the window.</p></div>
-    <div className="welcome-modes">{modes.map(mode => <button className="mode-card" key={mode.id} onClick={() => onCreate(mode.id)}>
-      <span className="mode-icon">{mode.icon}</span><span><strong>{mode.label}</strong><small>{mode.hint}</small></span><b>↗</b>
-    </button>)}</div>
-    <div className="recent"><div className="section-title">Recent comparisons</div>
-      {recent.length ? recent.map(item => <button key={item.id} onClick={() => onLoad(item.path)}>{item.name}<span>Open →</span></button>) : <p>No saved comparisons yet.</p>}
+  const [checkingForUpdates, setCheckingForUpdates] = useState(false);
+  const checkForUpdates = async () => {
+    setCheckingForUpdates(true);
+    try {
+      await window.api.checkForUpdates();
+      onNotice(`You're up to date. Version ${__APP_COMMIT__} is the latest available.`, 'success');
+    } catch (error) { onNotice('Unable to check for updates: ' + humanError(error)); }
+    finally { setCheckingForUpdates(false); }
+  };
+  return <DraggableDialog title="Welcome" eyebrow="NORWAYS DIFF CHECKER" icon="difference" className="welcome" onClose={onDismiss}>
+    <div className="welcome-head"><div><h1>What would you like to compare?</h1><p>Choose a comparison or drop files and folders anywhere in the window.</p></div>
+      <div className="welcome-actions">
+        <button type="button" disabled={checkingForUpdates} title="Check for updates" onClick={() => void checkForUpdates()}><MaterialIcon name={checkingForUpdates ? 'progress_activity' : 'refresh'} /><span><small>VERSION</small>{checkingForUpdates ? 'Checking…' : __APP_COMMIT__}</span></button>
+        <button type="button" title="Open Norway174 on GitHub" onClick={() => void window.api.openExternalUrl('https://github.com/Norway174')}><MaterialIcon name="open_in_new" /><span><small>PROJECT</small>Open GitHub</span></button>
+      </div>
     </div>
-    <button className="modal-dismiss" onClick={onDismiss}>Close</button>
-  </div></div>;
+    <div className={'welcome-columns' + (recentEnabled ? '' : ' recent-disabled')}>{recentEnabled && <div className="recent"><div className="section-title">Recent comparisons</div>
+      {recent.length ? <div className="recent-list">{recent.map(item => <div className="recent-item" key={`${item.type}:${item.left}:${item.right}`}>
+        <button className="recent-open" onClick={() => onOpenRecent(item)} title={`${item.left}\n${item.right}`}>
+          <span className="recent-filenames"><span>{item.left.split(/[\\/]/).at(-1)}</span><span>{item.right.split(/[\\/]/).at(-1)}</span></span><MaterialIcon name="arrow_forward" className="recent-arrow" />
+        </button>
+        <button className="recent-remove" type="button" title="Remove from recent comparisons" aria-label="Remove from recent comparisons" onClick={() => onRemoveRecent(item)}><MaterialIcon name="close" /></button>
+      </div>)}</div> : <p>No recent comparisons yet.</p>}
+    </div>}<div className="welcome-types"><div className="section-title">Compare types</div><div className="welcome-modes">{modes.map(mode => <button className="mode-card" key={mode.id} onClick={() => onCreate(mode.id)}>
+      <MaterialIcon name={mode.icon} className="mode-icon" /><span><strong>{mode.label}</strong><small>{mode.hint}</small></span><MaterialIcon name="arrow_outward" className="mode-action" />
+    </button>)}</div></div>
+    </div>
+  </DraggableDialog>;
+}
+type SettingsCategory = 'all' | 'general' | 'history' | 'system';
+const settingsCategories: { id: SettingsCategory; label: string; icon: string; hint: string; keywords: string }[] = [
+  { id: 'all', label: 'All', icon: 'apps', hint: 'Every setting', keywords: 'all general history system startup workspace recent comparisons storage explorer context menu' },
+  { id: 'general', label: 'General', icon: 'tune', hint: 'Startup and workspace', keywords: 'restore previous tabs startup workspace' },
+  { id: 'history', label: 'History', icon: 'history', hint: 'Recent comparisons', keywords: 'recent comparisons history limit' },
+  { id: 'system', label: 'System', icon: 'computer', hint: 'Storage and Explorer', keywords: 'app data folder windows explorer context menu install uninstall' }
+];
+function Settings({ prefs, appDataPath, contextMenuInstalled, contextMenuBusy, onPrefs, onContextMenuBusy, onContextMenuInstalled, onNotice, onClose }: {
+  prefs: Preferences; appDataPath: string; contextMenuInstalled: boolean | null; contextMenuBusy: boolean;
+  onPrefs: (value: Preferences) => void; onContextMenuBusy: (value: boolean) => void; onContextMenuInstalled: (value: boolean) => void;
+  onNotice: (message: string) => void; onClose: () => void;
+}) {
+  const [category, setCategory] = useState<SettingsCategory>('all');
+  const [query, setQuery] = useState('');
+  const normalizedQuery = query.trim().toLowerCase();
+  const visibleCategories = settingsCategories.filter(item => !normalizedQuery || (item.id !== 'all' && `${item.label} ${item.hint} ${item.keywords}`.toLowerCase().includes(normalizedQuery)));
+  const selectedCategory = visibleCategories.some(item => item.id === category) ? category : visibleCategories[0]?.id;
+  const savePreferences = async (patch: Partial<Preferences>) => {
+    const value = await window.api.setSettings(patch);
+    onPrefs(value);
+  };
+  return <DraggableDialog title="Settings" eyebrow="NORWAYS DIFF CHECKER" icon="settings" className="settings-modal" onClose={onClose}>
+    <div className="settings-search"><MaterialIcon name="search" /><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search settings" aria-label="Search settings" />{query && <button type="button" title="Clear search" aria-label="Clear search" onClick={() => setQuery('')}><MaterialIcon name="close" /></button>}</div>
+    <div className="settings-layout">
+      <nav className="settings-nav" aria-label="Settings categories">{visibleCategories.map(item => <button type="button" key={item.id} className={selectedCategory === item.id ? 'selected' : ''} onClick={() => setCategory(item.id)}>
+        <MaterialIcon name={item.icon} /><span><strong>{item.label}</strong><small>{item.hint}</small></span>
+      </button>)}</nav>
+      <section className="settings-main">
+        {!selectedCategory && <div className="settings-empty"><MaterialIcon name="search_off" /><strong>No settings found</strong><span>Try a different search.</span></div>}
+        {(selectedCategory === 'all' || selectedCategory === 'general') && <><div className="settings-section-head"><span className="settings-section-icon"><MaterialIcon name="tune" /></span><div><h2>General</h2><p>Control how your workspace starts.</p></div></div>
+          <div className="settings-group"><div className="settings-group-title">Startup</div><button className="settings-toggle" type="button" role="switch" aria-checked={prefs.restoreTabs} onClick={() => void savePreferences({ restoreTabs: !prefs.restoreTabs })}>
+            <span><strong>Restore previous tabs</strong><small>Reopen your comparison workspace when the app starts.</small></span><span className="toggle-track" aria-hidden="true"><span /></span>
+          </button></div>
+        </>}
+        {(selectedCategory === 'all' || selectedCategory === 'history') && <><div className="settings-section-head"><span className="settings-section-icon"><MaterialIcon name="history" /></span><div><h2>History</h2><p>Choose how many comparisons appear on Welcome.</p></div></div>
+          <div className="settings-group"><div className="settings-group-title">Recent comparisons</div><label className="settings-number"><span><strong>Items to remember</strong><small>Set to 0 to disable recent comparisons.</small></span><ScrubbableNumber min={0} max={50} value={prefs.recentCompareLimit} onChange={recentCompareLimit => {
+            const next = { ...prefs, recentCompareLimit, recentCompares: prefs.recentCompares.slice(0, recentCompareLimit) };
+            onPrefs(next);
+            void savePreferences({ recentCompareLimit });
+          }} /></label></div>
+        </>}
+        {(selectedCategory === 'all' || selectedCategory === 'system') && <><div className="settings-section-head"><span className="settings-section-icon"><MaterialIcon name="computer" /></span><div><h2>System</h2><p>Manage local storage and Windows integration.</p></div></div>
+          <div className="settings-group"><div className="settings-group-title">Storage</div><div className="settings-path"><label htmlFor="app-data-path"><strong>App data folder</strong><small>Preferences, projects, and cache are stored here.</small></label><div><input id="app-data-path" readOnly value={appDataPath} /><button type="button" title="Open app data folder" aria-label="Open app data folder" onClick={() => void window.api.openAppDataFolder().catch(error => onNotice('Unable to open the app data folder: ' + humanError(error)))}><MaterialIcon name="folder_open" /></button></div></div></div>
+          <div className="settings-group"><div className="settings-group-title">Windows Explorer</div><div className="settings-action-row"><span><strong>Explorer context menu</strong><small>Add “Compare this file” and “Compare this folder” to Windows Explorer.</small></span><button className={contextMenuInstalled ? 'danger' : 'primary'} type="button" disabled={contextMenuBusy || contextMenuInstalled === null} onClick={async () => {
+            onContextMenuBusy(true);
+            try { onContextMenuInstalled(await window.api.setShellContextMenuInstalled(!contextMenuInstalled)); }
+            catch (error) { onNotice('Unable to update the Windows context menu: ' + humanError(error)); }
+            finally { onContextMenuBusy(false); }
+          }}>{contextMenuInstalled === null ? 'Checking…' : contextMenuBusy ? 'Updating…' : contextMenuInstalled ? 'Uninstall' : 'Install'}</button></div></div>
+        </>}
+      </section>
+    </div>
+    <footer className="settings-footer"><span>Changes are saved automatically.</span><button className="primary" onClick={onClose}>Done</button></footer>
+  </DraggableDialog>;
 }
 function Pairing({ inputs, type, onChangeType, onCancel, onConfirm }: {
   inputs: Input[]; type: Mode; onChangeType: (type: Mode) => void; onCancel: () => void; onConfirm: (left: Input, right: Input, others: Input[], type: Mode) => void;
@@ -118,7 +415,7 @@ function Pairing({ inputs, type, onChangeType, onCancel, onConfirm }: {
     <div className="small-caps">PAIR INPUTS</div><h2>Choose two to compare</h2><p>Only two inputs are active in a comparison. The rest stay available for later swaps.</p>
     <div className="pair-row">
       <label>Original<select value={left} onChange={event => { if (event.target.value === right) setRight(left); setLeft(event.target.value); }}>{inputs.map(input => <option key={input.id} value={input.id}>{input.name}</option>)}</select></label>
-      <button title="Swap sides" onClick={() => { setLeft(right); setRight(left); }}>⇄</button>
+      <button title="Swap sides" aria-label="Swap sides" onClick={() => { setLeft(right); setRight(left); }}><MaterialIcon name="swap_horiz" /></button>
       <label>Changed<select value={right} onChange={event => { if (event.target.value === left) setLeft(right); setRight(event.target.value); }}>{inputs.map(input => <option key={input.id} value={input.id}>{input.name}</option>)}</select></label>
     </div>
     <label className="type-select">Compare as<select value={type} onChange={event => onChangeType(event.target.value as Mode)}>{modes.filter(mode => inputs.every(input => input.types.includes(mode.id))).map(mode => <option key={mode.id} value={mode.id}>{mode.label}</option>)}</select></label>
@@ -130,7 +427,7 @@ function InputSlot({ side, input, available, type, onBrowse, onReplace, onDrop }
   side: 'left' | 'right'; input: Input | null; available: Input[]; type: Mode;
   onBrowse: () => void; onReplace: (input: Input) => void; onDrop: (event: React.DragEvent) => void;
 }) {
-  return <div className="input-slot" onDragOver={event => { event.preventDefault(); event.stopPropagation(); }} onDrop={onDrop}>
+  return <div className="input-slot" onDragOver={event => { if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); event.stopPropagation(); } }} onDrop={event => { if (event.dataTransfer.types.includes('Files')) onDrop(event); }}>
     <div className="small-caps">{side === 'left' ? 'ORIGINAL' : 'CHANGED'}</div>
     <div className="slot-name">{input ? input.name : 'Drop ' + ({ text: 'text', images: 'an image', documents: 'a document', excel: 'a spreadsheet', folders: 'a folder' }[type]) + ' here'}</div>
     <button onClick={onBrowse}>Browse…</button>
@@ -139,20 +436,67 @@ function InputSlot({ side, input, available, type, onBrowse, onReplace, onDrop }
     </select>}
   </div>;
 }
-function DiffText({ result, options, language }: { result: any; options: Options; language?: string }) {
+function DiffText({ result, options, language, selectedGroup, changeGroups, onSelectGroup }: { result: any; options: Options; language?: string; selectedGroup?: number; changeGroups?: Map<any, number>; onSelectGroup?: (group: number) => void }) {
   const [page, setPage] = useState(0);
+  const [rowHeights, setRowHeights] = useState<number[]>([]);
   const splitRefs = useRef<Array<HTMLElement | null>>([null, null]);
+  const rowRefs = useRef<Array<Array<HTMLDivElement | null>>>([[], []]);
   const scrollLock = useRef(false);
   useEffect(() => setPage(0), [result]);
-  if (!result?.chunks) return null;
-  const chunks = options.hideUnchanged ? result.chunks.filter((item: any) => item.type !== 'same') : result.chunks;
+  const hasChunks = !!result?.chunks;
+  const chunks = !hasChunks ? [] : options.hideUnchanged ? result.chunks.filter((item: any) => item.type !== 'same') : result.chunks;
   const pageSize = 300;
   const pageCount = Math.max(1, Math.ceil(chunks.length / pageSize));
   const visible = chunks.slice(Math.min(page, pageCount - 1) * pageSize, (Math.min(page, pageCount - 1) + 1) * pageSize);
-  const render = (items: any[]) => <div className={'diff-output ' + (options.wrap ? 'wrap' : '')}>{items.map((part: any, index: number) => <div key={index} className={'diff-chunk ' + part.type}>
-    <span className="line-no">{part.type === 'added' ? '+' : part.type === 'removed' ? '−' : ' '}{part.type === 'added' ? part.rightLine : part.leftLine}</span>
-    {language && options.syntaxHighlight ? <pre dangerouslySetInnerHTML={{ __html: hljs.highlight(part.text || ' ', { language, ignoreIllegals: true }).value }} /> : <pre>{part.text || ' '}</pre>}
-  </div>)}</div>;
+  const splitRows: Array<{ left?: any; right?: any }> = [];
+  for (let index = 0; index < visible.length; index++) {
+    const part = visible[index];
+    if (part.type === 'same') { splitRows.push({ left: part, right: part }); continue; }
+    const next = visible[index + 1];
+    if (next && next.type !== 'same' && next.type !== part.type) {
+      splitRows.push(part.type === 'removed' ? { left: part, right: next } : { left: next, right: part });
+      index++;
+    } else splitRows.push(part.type === 'removed' ? { left: part } : { right: part });
+  }
+  useEffect(() => {
+    if (!options.syncLineHeights || options.view !== 'split') { setRowHeights([]); return; }
+    const measure = () => {
+      const next = splitRows.map((_, index) => Math.max(...([0, 1] as const).map(side => {
+        const row = rowRefs.current[side][index];
+        return row ? Array.from(row.children).reduce((height, child) => height + (child as HTMLElement).offsetHeight, 0) : 0;
+      })));
+      setRowHeights(current => current.length === next.length && current.every((height, index) => height === next[index]) ? current : next);
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    rowRefs.current.flat().forEach(row => { if (row) observer.observe(row); });
+    return () => observer.disconnect();
+  }, [result, page, options.hideUnchanged, options.syncLineHeights, options.view, options.wrap, language]);
+  if (!hasChunks) return null;
+  const text = (part: any) => part.characterChanges
+    ? <pre>{part.characterChanges.map((segment: any, index: number) => <span key={index} className={segment.changed ? 'character-change' : undefined}>{segment.text}</span>)}</pre>
+    : language && options.syntaxHighlight
+      ? <pre dangerouslySetInnerHTML={{ __html: hljs.highlight(part.text || ' ', { language, ignoreIllegals: true }).value }} />
+      : <pre>{part.text || ' '}</pre>;
+  const renderPart = (part: any, index: number) => {
+    const group = changeGroups?.get(part);
+    const selectable = group !== undefined && !!onSelectGroup;
+    return <div key={index} className={'diff-chunk ' + part.type + (group === selectedGroup ? ' selected-change' : '') + (selectable ? ' selectable-change' : '')}
+      role={selectable ? 'button' : undefined} tabIndex={selectable ? 0 : undefined} aria-pressed={selectable ? group === selectedGroup : undefined}
+      onClick={selectable ? () => onSelectGroup(group) : undefined}
+      onKeyDown={selectable ? event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onSelectGroup(group); } } : undefined}>
+      <span className="line-no">{part.type === 'added' ? '+' : part.type === 'removed' ? '−' : ' '}{part.type === 'added' ? part.rightLine : part.leftLine}</span>
+      {text(part)}
+    </div>;
+  };
+  const render = (items: any[]) => <div className={'diff-output ' + (options.wrap ? 'wrap' : '')}>{items.map(renderPart)}</div>;
+  const renderSplit = (side: 0 | 1) => <div className={'diff-output ' + (options.wrap ? 'wrap' : '')}>{splitRows.map((row, index) => {
+    const part = side === 0 ? row.left : row.right;
+    return <div key={index} ref={node => { rowRefs.current[side][index] = node; }} className="diff-row"
+      style={options.syncLineHeights && rowHeights[index] ? { minHeight: rowHeights[index] } : undefined}>
+      {part && renderPart(part, index)}
+    </div>;
+  })}</div>;
   const sync = (from: 0 | 1, event: React.UIEvent<HTMLElement>) => {
     if (!options.syncScroll || scrollLock.current) return;
     const other = splitRefs.current[1 - from];
@@ -162,22 +506,33 @@ function DiffText({ result, options, language }: { result: any; options: Options
     other.scrollLeft = event.currentTarget.scrollLeft;
     requestAnimationFrame(() => { scrollLock.current = false; });
   };
-  const content = options.view === 'split' ? <div className="diff-split"><section ref={node => { splitRefs.current[0] = node; }} onScroll={event => sync(0, event)}><header>Original</header>{render(visible.filter((part: any) => part.type !== 'added'))}</section><section ref={node => { splitRefs.current[1] = node; }} onScroll={event => sync(1, event)}><header>Changed</header>{render(visible.filter((part: any) => part.type !== 'removed'))}</section></div> : render(visible);
+  const content = options.view === 'split' ? <div className="diff-split"><section ref={node => { splitRefs.current[0] = node; }} onScroll={event => sync(0, event)}><header>Original</header>{renderSplit(0)}</section><section ref={node => { splitRefs.current[1] = node; }} onScroll={event => sync(1, event)}><header>Changed</header>{renderSplit(1)}</section></div> : render(visible);
   return <div className="paged-diff">{pageCount > 1 && <div className="diff-pager"><button disabled={page === 0} onClick={() => setPage(value => value - 1)}>Previous section</button><span>{Math.min(page, pageCount - 1) + 1} of {pageCount}</span><button disabled={page >= pageCount - 1} onClick={() => setPage(value => value + 1)}>Next section</button></div>}{content}</div>;
 }
 function TextView({ tab, onText, onOption }: { tab: CompareTab; onText: (side: 'left' | 'right', text: string) => void; onOption: (patch: Partial<Options>) => void }) {
   const [left, setLeft] = useState(''), [right, setRight] = useState('');
+  const [editorHeight, setEditorHeight] = useState<number | null>(null);
+  const layoutRef = useRef<HTMLDivElement | null>(null);
+  const dividerPointer = useRef<number | null>(null);
   const editorRefs = useRef<Array<HTMLTextAreaElement | null>>([null, null]);
   const editorScrollLock = useRef(false);
   const [selectedChange, setSelectedChange] = useState(0);
   useEffect(() => { if (tab.left) window.api.readText(tab.left).then(setLeft).catch(() => setLeft('')); else setLeft(''); }, [tab.left?.id]);
   useEffect(() => { if (tab.right) window.api.readText(tab.right).then(setRight).catch(() => setRight('')); else setRight(''); }, [tab.right?.id]);
+  useEffect(() => {
+    if (typeof tab.result?.leftText === 'string' && (tab.left?.text === undefined || tab.left.text === tab.result.leftText)) setLeft(tab.result.leftText);
+    if (typeof tab.result?.rightText === 'string' && (tab.right?.text === undefined || tab.right.text === tab.result.rightText)) setRight(tab.result.rightText);
+  }, [tab.result, tab.left?.text, tab.right?.text]);
+  useEffect(() => setSelectedChange(0), [tab.result]);
   const groups: { first: any; last: any; leftText: string; rightText: string }[] = [];
+  const changeGroups = new Map<any, number>();
   const chunks = tab.result?.chunks || [];
   for (let index = 0; index < chunks.length;) {
     if (chunks[index].type === 'same') { index++; continue; }
+    const group = groups.length;
     const first = chunks[index]; let leftText = '', rightText = '';
     while (index < chunks.length && chunks[index].type !== 'same') {
+      changeGroups.set(chunks[index], group);
       if (chunks[index].type === 'removed') leftText += chunks[index].text;
       if (chunks[index].type === 'added') rightText += chunks[index].text;
       index++;
@@ -205,18 +560,36 @@ function TextView({ tab, onText, onOption }: { tab: CompareTab; onText: (side: '
     other.scrollLeft = event.currentTarget.scrollLeft;
     requestAnimationFrame(() => { editorScrollLock.current = false; });
   }
-  return <div className="mode-body">
+  function resizeEditors(clientY: number) {
+    const layout = layoutRef.current;
+    if (!layout) return;
+    const bounds = layout.getBoundingClientRect();
+    const minimumPaneHeight = 100;
+    const resultHeaderHeight = layout.querySelector<HTMLElement>('.result-head')?.offsetHeight || 43;
+    const maximumEditorHeight = Math.max(minimumPaneHeight, bounds.height - resultHeaderHeight - minimumPaneHeight - 6);
+    setEditorHeight(Math.max(minimumPaneHeight, Math.min(maximumEditorHeight, clientY - bounds.top)));
+  }
+  function nudgeEditors(amount: number) {
+    const currentHeight = editorHeight ?? layoutRef.current?.querySelector<HTMLElement>('.editors')?.offsetHeight ?? 170;
+    resizeEditors((layoutRef.current?.getBoundingClientRect().top || 0) + currentHeight + amount);
+  }
+  return <div ref={layoutRef} className="mode-body text-mode-body" style={editorHeight === null ? undefined : { '--text-editor-height': `${editorHeight}px` } as React.CSSProperties}>
     <div className="editors">
       <label><span>ORIGINAL TEXT</span><textarea ref={node => { editorRefs.current[0] = node; }} wrap={tab.options.wrap ? 'soft' : 'off'} onScroll={event => syncEditor(0, event)} spellCheck={false} value={left} onChange={event => { setLeft(event.target.value); onText('left', event.target.value); }} placeholder="Paste or type original text…" /></label>
       <label><span>CHANGED TEXT</span><textarea ref={node => { editorRefs.current[1] = node; }} wrap={tab.options.wrap ? 'soft' : 'off'} onScroll={event => syncEditor(1, event)} spellCheck={false} value={right} onChange={event => { setRight(event.target.value); onText('right', event.target.value); }} placeholder="Paste or type changed text…" /></label>
     </div>
+    <div className="text-pane-divider" role="separator" aria-label="Resize text editors and changes" aria-orientation="horizontal" tabIndex={0}
+      onPointerDown={event => { dividerPointer.current = event.pointerId; event.currentTarget.setPointerCapture(event.pointerId); resizeEditors(event.clientY); }}
+      onPointerMove={event => { if (dividerPointer.current === event.pointerId) resizeEditors(event.clientY); }}
+      onPointerUp={event => { if (dividerPointer.current === event.pointerId) { dividerPointer.current = null; event.currentTarget.releasePointerCapture(event.pointerId); } }}
+      onPointerCancel={() => { dividerPointer.current = null; }}
+      onKeyDown={event => { if (event.key === 'ArrowUp' || event.key === 'ArrowDown') { event.preventDefault(); nudgeEditors(event.key === 'ArrowUp' ? -16 : 16); } }} />
     <div className="result-head"><strong>Changes</strong><span>{tab.result ? tab.result.count + ' changed blocks' : 'Add text on both sides to compare'}</span>
-      {!!groups.length && <><button onClick={() => setSelectedChange(value => Math.max(0, value - 1))}>Previous</button><span>{Math.min(selectedChange + 1, groups.length)} / {groups.length}</span><button onClick={() => setSelectedChange(value => Math.min(groups.length - 1, value + 1))}>Next</button>
-        <button disabled={!canMerge} onClick={() => applyChange('right')}>Accept original →</button><button disabled={!canMerge} onClick={() => applyChange('left')}>← Accept changed</button></>}
+      {!!groups.length && <><button onClick={() => setSelectedChange(value => (value - 1 + groups.length) % groups.length)}>Previous</button><span>{Math.min(selectedChange + 1, groups.length)} / {groups.length}</span><button onClick={() => setSelectedChange(value => (value + 1) % groups.length)}>Next</button>
+        <button className="icon-label" disabled={!canMerge} onClick={() => applyChange('right')}>Accept original<MaterialIcon name="arrow_forward" /></button><button className="icon-label" disabled={!canMerge} onClick={() => applyChange('left')}><MaterialIcon name="arrow_back" />Accept changed</button></>}
       <select value={tab.options.view} onChange={event => onOption({ view: event.target.value })}><option value="split">Side by side</option><option value="unified">Unified</option></select>
     </div>
-    {selected && <div className="change-preview"><span>Original: {selected.leftText.slice(0, 160) || '∅'}</span><span>Changed: {selected.rightText.slice(0, 160) || '∅'}</span></div>}
-    <DiffText result={tab.result} options={tab.options} language={languageFor(tab.left) || languageFor(tab.right)} />
+    <DiffText result={tab.result} options={tab.options} language={languageFor(tab.left) || languageFor(tab.right)} selectedGroup={selectedChange} changeGroups={changeGroups} onSelectGroup={setSelectedChange} />
   </div>;
 }
 function DocumentView({ tab, onDecision, onOrder }: { tab: CompareTab; onDecision: (group: number, decision: 'accept' | 'reject') => void; onOrder: (order: number[]) => void }) {
@@ -244,8 +617,8 @@ function DocumentView({ tab, onDecision, onOrder }: { tab: CompareTab; onDecisio
   </p>)}</div>;
   return <div className="mode-body"><div className="result-head"><strong>Document changes</strong><span>{result.count} text blocks · {result.structuralChanges?.length || 0} structural changes</span></div>
     {pageCount > 1 && <div className="document-page-order"><strong>Changed PDF page order</strong><span>Reorder pages for comparison and export:</span>{pageOrder.map((number, index) => <div key={number}><span>Position {index + 1}: page {number}</span>
-      <button disabled={index === 0} onClick={() => { const next = [...pageOrder]; [next[index - 1], next[index]] = [next[index], next[index - 1]]; onOrder(next); }}>↑</button>
-      <button disabled={index === pageOrder.length - 1} onClick={() => { const next = [...pageOrder]; [next[index + 1], next[index]] = [next[index], next[index + 1]]; onOrder(next); }}>↓</button></div>)}</div>}
+      <button aria-label={`Move page ${number} up`} title="Move up" disabled={index === 0} onClick={() => { const next = [...pageOrder]; [next[index - 1], next[index]] = [next[index], next[index - 1]]; onOrder(next); }}><MaterialIcon name="arrow_upward" /></button>
+      <button aria-label={`Move page ${number} down`} title="Move down" disabled={index === pageOrder.length - 1} onClick={() => { const next = [...pageOrder]; [next[index + 1], next[index]] = [next[index], next[index + 1]]; onOrder(next); }}><MaterialIcon name="arrow_downward" /></button></div>)}</div>}
     {view === 'image' ? result.pageImages ? <div className="document-pages"><img src={result.pageImages.left} alt="Original PDF page" /><img src={result.pageImages.right} alt="Changed PDF page" /></div>
       : <div className="empty-result">Rendered pages are unavailable for this pair.</div> : null}
     {(view === 'rich' || view === 'redline' || view === 'split') && !!result.structuralChanges?.length && <div className="document-structure"><strong>Structure and formatting</strong>
@@ -260,17 +633,115 @@ function DocumentView({ tab, onDecision, onOrder }: { tab: CompareTab; onDecisio
     <DiffText result={view === 'redline' ? { ...result, chunks: decidedChunks(result.chunks || [], tab.decisions) } : result} options={{ ...tab.options, view: view === 'plain' || view === 'redline' || view === 'ocr' ? 'unified' : 'split' }} />
   </div>;
 }
-function ImageView({ tab }: { tab: CompareTab }) {
+function ImageView({ tab, onOption, onFlickerChange, flickerProgressRef, flickerPaused, manualFlickToken, transitionRunning }: { tab: CompareTab; onOption: (patch: Partial<Options>) => void; onFlickerChange: (right: boolean) => void; flickerProgressRef: React.RefObject<HTMLDivElement | null>; flickerPaused: boolean; manualFlickToken: number; transitionRunning: boolean }) {
   const result = tab.result;
   const [flicker, setFlicker] = useState(false);
   const [zoom, setZoom] = useState(1);
+  const [deviceScaleFactor, setDeviceScaleFactor] = useState(() => window.devicePixelRatio || 1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [fitToView, setFitToView] = useState(true);
+  const [sliderHandleHover, setSliderHandleHover] = useState(false);
+  const [regionsOpen, setRegionsOpen] = useState(false);
+  const [regionsHeight, setRegionsHeight] = useState(220);
   const dragPoint = useRef<{ x: number; y: number } | null>(null);
+  const sliderDragging = useRef(false);
+  const regionsDrag = useRef<{ y: number; height: number; moved: boolean } | null>(null);
+  const workspaceRef = useRef<HTMLDivElement>(null);
+  const imageSurfaceRef = useRef<HTMLDivElement>(null);
+  const baseImageRef = useRef<HTMLImageElement>(null);
+  useEffect(() => { onFlickerChange(flicker); }, [flicker, onFlickerChange]);
+  useEffect(() => {
+    const updateDeviceScaleFactor = () => setDeviceScaleFactor(window.devicePixelRatio || 1);
+    window.addEventListener('resize', updateDeviceScaleFactor);
+    return () => window.removeEventListener('resize', updateDeviceScaleFactor);
+  }, []);
   useEffect(() => {
     if (tab.options.view !== 'flicker') return;
-    const timer = setInterval(() => setFlicker(value => !value), tab.options.flickerMs);
+    const restartProgress = () => flickerProgressRef.current?.getAnimations().forEach(animation => { animation.cancel(); animation.play(); });
+    if (flickerPaused) {
+      flickerProgressRef.current?.getAnimations().forEach(animation => animation.pause());
+      return;
+    }
+    restartProgress();
+    const timer = setInterval(() => {
+      setFlicker(value => !value);
+      restartProgress();
+    }, Math.max(1, tab.options.flickerMs));
     return () => clearInterval(timer);
-  }, [tab.options.view, tab.options.flickerMs]);
+  }, [tab.id, tab.options.view, tab.options.flickerMs, flickerPaused, manualFlickToken]);
+  useEffect(() => {
+    if (manualFlickToken && tab.options.view === 'flicker') setFlicker(value => !value);
+  }, [manualFlickToken]);
+  useEffect(() => {
+    if (!transitionRunning || (tab.options.view !== 'slider' && tab.options.view !== 'fade')) return;
+    const maximum = tab.options.view === 'slider' ? revealInternalMaximum : percentageMaximum;
+    const duration = Math.max(1, tab.options.transitionMs ?? 500);
+    let position = Math.max(0, Math.min(maximum, tab.options.opacity));
+    let direction = position >= maximum ? -1 : 1;
+    let previous = performance.now();
+    let frame = 0;
+    const animate = (now: number) => {
+      const elapsed = Math.min(now - previous, duration * 2);
+      previous = now;
+      position += direction * maximum * elapsed / duration;
+      while (position > maximum || position < 0) {
+        if (position > maximum) { position = maximum - (position - maximum); direction = -1; }
+        if (position < 0) { position = -position; direction = 1; }
+      }
+      onOption({ opacity: position });
+      frame = requestAnimationFrame(animate);
+    };
+    frame = requestAnimationFrame(animate);
+    return () => cancelAnimationFrame(frame);
+  }, [tab.id, tab.options.view, tab.options.transitionMs, transitionRunning]);
+  useEffect(() => {
+    const surface = imageSurfaceRef.current;
+    if (!surface || !result || !fitToView) return;
+    const fitImage = () => {
+      const splitHorizontal = tab.options.view === 'split' && tab.options.splitOrientation === 'horizontal';
+      const availableWidth = tab.options.view === 'split' && !splitHorizontal ? Math.max(1, (surface.clientWidth - 1) / 2) : surface.clientWidth;
+      const availableHeight = splitHorizontal ? Math.max(1, (surface.clientHeight - 1) / 2) : surface.clientHeight;
+      const imageWidth = tab.options.view === 'split' ? Math.max(result.splitLeftWidth || result.width, result.splitRightWidth || result.width) : result.width;
+      const imageHeight = tab.options.view === 'split' ? Math.max(result.splitLeftHeight || result.height, result.splitRightHeight || result.height) : result.height;
+      const next = Math.min(1, availableWidth * deviceScaleFactor / imageWidth, availableHeight * deviceScaleFactor / imageHeight);
+      setZoom(Math.max(0.01, next));
+      setPan({ x: 0, y: 0 });
+    };
+    fitImage();
+    const observer = new ResizeObserver(fitImage);
+    observer.observe(surface);
+    return () => observer.disconnect();
+  }, [fitToView, result, tab.options.view, tab.options.splitOrientation, deviceScaleFactor]);
+  useEffect(() => {
+    const surface = imageSurfaceRef.current;
+    if (!surface) return;
+    const zoomImage = (event: WheelEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+      setFitToView(false);
+      const images = Array.from(surface.querySelectorAll('img'));
+      const image = images.find(item => {
+        const bounds = item.getBoundingClientRect();
+        return event.clientX >= bounds.left && event.clientX <= bounds.right && event.clientY >= bounds.top && event.clientY <= bounds.bottom;
+      }) || images[0];
+      const bounds = image?.getBoundingClientRect();
+      setZoom(value => {
+        const next = Math.min(8, Math.max(0.01, value * (event.deltaY < 0 ? 1.12 : 0.89)));
+        if (bounds && next !== value) {
+          const ratio = next / value;
+          const imageCenterX = bounds.left + bounds.width / 2;
+          const imageCenterY = bounds.top + bounds.height / 2;
+          setPan(current => ({
+            x: current.x + (event.clientX - imageCenterX) * (1 - ratio),
+            y: current.y + (event.clientY - imageCenterY) * (1 - ratio)
+          }));
+        }
+        return next;
+      });
+    };
+    surface.addEventListener('wheel', zoomImage, { passive: false });
+    return () => surface.removeEventListener('wheel', zoomImage);
+  }, [result, tab.options.view]);
   if (!result) return <div className="empty-result">Drop two images to compare pixels and metadata.</div>;
   const view = tab.options.view;
   if (view === 'details') return <div className="details-grid"><pre>{JSON.stringify(result.leftDetails, null, 2)}</pre><pre>{JSON.stringify(result.rightDetails, null, 2)}</pre></div>;
@@ -282,24 +753,109 @@ function ImageView({ tab }: { tab: CompareTab }) {
         {(result[side + 'OcrWords'] || []).map((word: any, index: number) => <span key={index} title={`${Math.round(word.confidence)}% confidence`} style={{ left: word.x0, top: word.y0, width: Math.max(1, word.x1 - word.x0), height: Math.max(1, word.y1 - word.y0) }}>{word.text}</span>)}
       </div></div>{!result[side + 'OcrWords']?.length && <small>Enable OCR in Options, then compare.</small>}</div>)}
   </div>;
-  const transform = { transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})` };
-  const interaction = {
-    onWheel: (event: React.WheelEvent) => { event.preventDefault(); setZoom(value => Math.min(8, Math.max(0.25, value * (event.deltaY < 0 ? 1.12 : 0.89)))); },
-    onPointerDown: (event: React.PointerEvent<HTMLDivElement>) => { if (event.button === 0) { dragPoint.current = { x: event.clientX, y: event.clientY }; event.currentTarget.setPointerCapture(event.pointerId); } },
-    onPointerMove: (event: React.PointerEvent<HTMLDivElement>) => { if (dragPoint.current) { const dx = event.clientX - dragPoint.current.x, dy = event.clientY - dragPoint.current.y; dragPoint.current = { x: event.clientX, y: event.clientY }; setPan(value => ({ x: value.x + dx, y: value.y + dy })); } },
-    onPointerUp: () => { dragPoint.current = null; }
+  const imageStyle = (width: number, height: number) => {
+    const displayWidth = width * zoom / deviceScaleFactor;
+    const displayHeight = height * zoom / deviceScaleFactor;
+    return {
+      width: displayWidth,
+      height: displayHeight,
+      marginLeft: pan.x - displayWidth / 2,
+      marginTop: pan.y - displayHeight / 2
+    };
   };
-  return <div className="image-workspace"><div className="image-toolbar"><button onClick={() => setZoom(value => Math.max(.25, value / 1.25))}>−</button><span>{Math.round(zoom * 100)}%</span><button onClick={() => setZoom(value => Math.min(8, value * 1.25))}>+</button><button onClick={() => { setZoom(1); setPan({ x: 0, y: 0 }); }}>Reset view</button>
-    <span>Drag to pan · wheel to zoom</span>{tab.options.autoAlign && <span>Auto offset: {result.alignment?.automatic.x}, {result.alignment?.automatic.y}</span>}</div>
-    {view === 'split' ? <div className="image-split" {...interaction}><div><img src={result.leftData} style={transform} /></div><div><img src={result.rightData} style={transform} /></div></div> : <div className="image-stage" {...interaction}>
-      <img className="image-base" src={view === 'flicker' && flicker ? result.rightData : result.leftData} style={transform} />
-      {view === 'slider' && <img className="image-overlay" src={result.rightData} style={{ ...transform, clipPath: 'inset(0 ' + (100 - tab.options.opacity) + '% 0 0)' }} />}
-      {view === 'fade' && <img className="image-overlay" src={result.rightData} style={{ ...transform, opacity: tab.options.opacity / 100 }} />}
-      {view === 'subtract' && <img className="image-overlay" src={result.subtractData} style={transform} />}
-      {view === 'highlight' && <img className="image-overlay" src={result.diffData} style={transform} />}
-    </div>}<div className="image-regions"><strong>{result.regions?.length || 0} changed regions · {result.changed} pixels</strong>
-    {(result.regions || []).slice(0, 200).map((region: any, index: number) => <span key={index} className="image-region-item">{region.previewLeft && <img src={region.previewLeft} alt="Original region" />}{region.previewRight && <img src={region.previewRight} alt="Changed region" />}<span>#{index + 1} · ({region.x}, {region.y}) · {region.width} × {region.height} · {region.pixels} pixels</span></span>)}
-  </div>{!!tab.scans?.length && <div className="scan-history"><strong>Scans in this tab</strong>{tab.scans.slice(-8).map((scan, index) => <span key={index}>{new Date(scan.at).toLocaleTimeString()} · {scan.count} regions · {scan.changed} pixels</span>)}</div>}</div>;
+  const canvasStyle = imageStyle(result.width, result.height);
+  const leftDisplayData = result.displayLeftData || result.leftData;
+  const rightDisplayData = result.displayRightData || result.rightData;
+  const sliderHit = (clientX: number, clientY: number) => {
+    if (view !== 'slider' || !baseImageRef.current) return false;
+    const bounds = baseImageRef.current.getBoundingClientRect();
+    const edge = bounds.left + bounds.width * revealToPercentage(tab.options.opacity) / percentageMaximum;
+    return clientY >= bounds.top && clientY <= bounds.bottom && Math.abs(clientX - edge) <= 10;
+  };
+  const moveSlider = (clientX: number) => {
+    const bounds = baseImageRef.current?.getBoundingClientRect();
+    if (!bounds?.width) return;
+    const percentage = Math.max(0, Math.min(percentageMaximum, (clientX - bounds.left) / bounds.width * percentageMaximum));
+    onOption({ opacity: percentageToReveal(percentage) });
+  };
+  const interaction = {
+    onPointerDown: (event: React.PointerEvent<HTMLDivElement>) => {
+      if (event.button !== 0) return;
+      sliderDragging.current = sliderHit(event.clientX, event.clientY);
+      if (sliderDragging.current) moveSlider(event.clientX);
+      else dragPoint.current = { x: event.clientX, y: event.clientY };
+      event.currentTarget.setPointerCapture(event.pointerId);
+    },
+    onPointerMove: (event: React.PointerEvent<HTMLDivElement>) => {
+      if (sliderDragging.current) { moveSlider(event.clientX); setSliderHandleHover(true); return; }
+      if (dragPoint.current) {
+        const dx = event.clientX - dragPoint.current.x, dy = event.clientY - dragPoint.current.y;
+        dragPoint.current = { x: event.clientX, y: event.clientY };
+        setFitToView(false);
+        setPan(value => ({ x: value.x + dx, y: value.y + dy }));
+        return;
+      }
+      setSliderHandleHover(sliderHit(event.clientX, event.clientY));
+    },
+    onPointerUp: (event: React.PointerEvent<HTMLDivElement>) => {
+      sliderDragging.current = false;
+      dragPoint.current = null;
+      setSliderHandleHover(sliderHit(event.clientX, event.clientY));
+    },
+    onPointerCancel: () => { sliderDragging.current = false; dragPoint.current = null; setSliderHandleHover(false); },
+    onPointerLeave: () => { if (!sliderDragging.current && !dragPoint.current) setSliderHandleHover(false); }
+  };
+  const startRegionsDrag = (event: React.PointerEvent<HTMLButtonElement>) => {
+    if (event.button !== 0) return;
+    regionsDrag.current = { y: event.clientY, height: regionsOpen ? regionsHeight : 34, moved: false };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+  const moveRegionsDrag = (event: React.PointerEvent<HTMLButtonElement>) => {
+    if (!regionsDrag.current) return;
+    const delta = regionsDrag.current.y - event.clientY;
+    if (Math.abs(delta) > 3) regionsDrag.current.moved = true;
+    if (!regionsDrag.current.moved) return;
+    const maximum = Math.max(120, (workspaceRef.current?.clientHeight || 500) - 180);
+    const nextHeight = Math.min(maximum, Math.max(34, regionsDrag.current.height + delta));
+    setRegionsOpen(nextHeight > 50);
+    setRegionsHeight(Math.max(90, nextHeight));
+  };
+  const finishRegionsDrag = (event: React.PointerEvent<HTMLButtonElement>) => {
+    if (!regionsDrag.current) return;
+    const moved = regionsDrag.current.moved;
+    regionsDrag.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    if (!moved) setRegionsOpen(value => !value);
+  };
+  return <div ref={workspaceRef} className="image-workspace" onDragStart={event => event.preventDefault()}>
+    {view === 'split' ? <div ref={imageSurfaceRef} className={'image-split ' + (tab.options.splitOrientation || 'vertical')} {...interaction}><div><img src={result.splitLeftData || result.leftData} style={imageStyle(result.splitLeftWidth || result.width, result.splitLeftHeight || result.height)} /></div><div><img src={result.splitRightData || result.rightData} style={imageStyle(result.splitRightWidth || result.width, result.splitRightHeight || result.height)} /></div></div> : <div ref={imageSurfaceRef} className={'image-stage' + (view === 'slider' && sliderHandleHover ? ' slider-control-hover' : '')} {...interaction}>
+      <img ref={baseImageRef} className="image-base" src={view === 'flicker' && flicker ? rightDisplayData : leftDisplayData} style={{ ...canvasStyle, ...(view === 'slider' && tab.options.sliderNoOverlap ? { clipPath: 'inset(0 0 0 calc(' + tab.options.opacity + '% - ' + (0.5 / zoom) + 'px))' } : {}) }} />
+      {view === 'slider' && <img className="image-overlay" src={rightDisplayData} style={{ ...canvasStyle, clipPath: 'inset(0 ' + (100 - tab.options.opacity) + '% 0 0)' }} />}
+      {view === 'fade' && <img className="image-overlay" src={rightDisplayData} style={{ ...canvasStyle, opacity: tab.options.opacity / 100 }} />}
+      {view === 'subtract' && <img className="image-overlay" src={result.subtractData} style={canvasStyle} />}
+      {view === 'highlight' && <img className="image-overlay" src={result.diffData} style={canvasStyle} />}
+    </div>}<section className={'image-regions-panel' + (regionsOpen ? ' open' : '')} style={regionsOpen ? { height: regionsHeight } : undefined}>
+      <div className="image-regions-header">
+        <button className="image-regions-summary" aria-expanded={regionsOpen} onPointerDown={startRegionsDrag} onPointerMove={moveRegionsDrag} onPointerUp={finishRegionsDrag} onPointerCancel={() => { regionsDrag.current = null; }}>
+          <MaterialIcon name="drag_handle" className="image-regions-grip" /><strong>{result.regions?.length || 0} changed regions · {result.changed} pixels</strong>
+        </button>
+        <div className="image-zoom-controls">
+          <button aria-label={fitToView ? 'Show image at actual size' : 'Fit image to window'} title={fitToView ? 'Show image at actual size' : 'Fit image to window'} onClick={() => {
+            if (fitToView) {
+              setFitToView(false);
+              setZoom(1);
+              setPan({ x: 0, y: 0 });
+            } else setFitToView(true);
+          }}><MaterialIcon name={fitToView ? 'photo_size_select_actual' : 'fit_screen'} /></button>
+          <span className="image-zoom-value">{Math.round(zoom * 100)}%</span>
+          <button aria-label="Zoom out" title="Zoom out" onClick={() => { setFitToView(false); setZoom(value => Math.max(.01, value / 1.25)); }}><MaterialIcon name="zoom_out" /></button>
+          <button aria-label="Zoom in" title="Zoom in" onClick={() => { setFitToView(false); setZoom(value => Math.min(8, value * 1.25)); }}><MaterialIcon name="zoom_in" /></button>
+        </div>
+      </div>
+      {regionsOpen && <div className="image-regions-content"><div className="image-regions">
+        {(result.regions || []).slice(0, 200).map((region: any, index: number) => <span key={index} className="image-region-item">{region.previewLeft && <img src={region.previewLeft} alt="Original region" />}{region.previewRight && <img src={region.previewRight} alt="Changed region" />}<span>#{index + 1} · ({region.x}, {region.y}) · {region.width} × {region.height} · {region.pixels} pixels</span></span>)}
+      </div>{!!tab.scans?.length && <div className="scan-history"><strong>Scans in this tab</strong>{tab.scans.slice(-8).map((scan, index) => <span key={index}>{new Date(scan.at).toLocaleTimeString()} · {scan.count} regions · {scan.changed} pixels</span>)}</div>}</div>}
+    </section></div>;
 }
 function ExcelView({ tab, onOption }: { tab: CompareTab; onOption: (patch: Partial<Options>) => void }) {
   const result = tab.result;
@@ -342,52 +898,68 @@ function FolderView({ tab, onOpenPair }: { tab: CompareTab; onOpenPair: (left: s
   const pairs = (tab.result?.entries || []).filter((entry: any) => selected.has(entry.relative) && entry.left?.path && entry.right?.path && !entry.directory);
   const pageCount = Math.max(1, Math.ceil(entries.length / 500));
   const visibleEntries = entries.slice(Math.min(page, pageCount - 1) * 500, (Math.min(page, pageCount - 1) + 1) * 500);
-  const saved = new Map((tab.scanManifest || []).map(entry => [entry.relative, entry]));
-  const changedSinceSave = tab.scanManifest && tab.result ? (tab.result.entries as any[]).filter(entry => {
-    const previous = saved.get(entry.relative);
-    return !previous || previous.status !== entry.status || previous.leftHash !== entry.left?.hash || previous.rightHash !== entry.right?.hash;
-  }).length + tab.scanManifest.filter(entry => !(tab.result.entries as any[]).some(current => current.relative === entry.relative)).length : null;
   return <div className="folder-view"><div className="folder-toolbar"><input value={search} onChange={event => setSearch(event.target.value)} placeholder="Search paths…" />
     <select value={filter} onChange={event => setFilter(event.target.value)}>{['all','added','removed','modified','same'].map(status => <option key={status}>{status}</option>)}</select>
     <label className="check"><input type="checkbox" checked={collapseUnchanged} onChange={event => setCollapseUnchanged(event.target.checked)} />Collapse unchanged</label>
     <button disabled={!pairs.length} onClick={() => pairs.forEach((entry: any) => onOpenPair(entry.left.path, entry.right.path))}>Compare selected ({pairs.length})</button>
-    <span>{tab.result?.count ?? 0} differences{changedSinceSave !== null ? ` · ${changedSinceSave} changed since save` : ''}</span></div>
+    <span>{tab.result?.count ?? 0} differences</span></div>
     {pageCount > 1 && <div className="diff-pager"><button disabled={page === 0} onClick={() => setPage(value => value - 1)}>Previous paths</button><span>{Math.min(page, pageCount - 1) + 1} of {pageCount}</span><button disabled={page >= pageCount - 1} onClick={() => setPage(value => value + 1)}>Next paths</button></div>}
     <div className="folder-list">{visibleEntries.map((entry: any) => <div key={entry.relative} className={'folder-entry ' + entry.status}>
       <input type="checkbox" aria-label={'Select ' + entry.relative} disabled={!entry.left?.path || !entry.right?.path || entry.directory} checked={selected.has(entry.relative)} onChange={event => setSelected(previous => { const next = new Set(previous); if (event.target.checked) next.add(entry.relative); else next.delete(entry.relative); return next; })} />
       <button onClick={() => { if (entry.left?.path && entry.right?.path && !entry.directory) onOpenPair(entry.left.path, entry.right.path); }}>
-        <span style={{ paddingLeft: Math.min(6, entry.relative.split(/[\\/]/).length - 1) * 12 }}>{entry.directory ? '▣' : '▤'} {entry.relative}</span><small>{entry.status}{entry.metadataChanged ? ' · metadata' : ''}</small></button>
+        <span className="folder-path" style={{ paddingLeft: Math.min(6, entry.relative.split(/[\\/]/).length - 1) * 12 }}><MaterialIcon name={entry.directory ? 'folder' : 'draft'} />{entry.relative}</span><small>{entry.status}{entry.metadataChanged ? ' · metadata' : ''}</small></button>
     </div>)}</div>
   </div>;
 }
-function OptionsPanel({ tab, change, onNotes, onImagePreset }: { tab: CompareTab; change: (patch: Partial<Options>) => void; onNotes: (notes: string) => void; onImagePreset: (name: string) => void }) {
+function OptionsPanel({ tab, change, flickerProgressRef, flickerPaused, onToggleFlickerPaused, onManualFlick, transitionRunning, onToggleTransition }: { tab: CompareTab; change: (patch: Partial<Options>) => void; flickerProgressRef: React.RefObject<HTMLDivElement | null>; flickerPaused: boolean; onToggleFlickerPaused: () => void; onManualFlick: () => void; transitionRunning: boolean; onToggleTransition: () => void }) {
   const o = tab.options;
-  const toggle = (name: keyof Options) => <label className="check"><input type="checkbox" checked={Boolean(o[name])} onChange={event => change({ [name]: event.target.checked })} />{String(name).replace(/([A-Z])/g, ' $1')}</label>;
+  const toggle = (name: keyof Options, label = String(name).replace(/([A-Z])/g, ' $1')) => <label className="check"><input type="checkbox" checked={Boolean(o[name])} onChange={event => change({ [name]: event.target.checked })} />{label}</label>;
+  const imageView = imageViewOrDefault(o.view);
+  const isVisualImageView = ['split','slider','fade','flicker','subtract','highlight'].includes(imageView);
+  const usesImageTransform = isVisualImageView || imageView === 'ocr' || imageView === 'rich-ocr';
+  const isOcrView = imageView === 'ocr' || imageView === 'rich-ocr';
+  const usesPdfInput = tab.left?.name.toLowerCase().endsWith('.pdf') || tab.right?.name.toLowerCase().endsWith('.pdf');
   return <aside className="options"><div className="section-title">OPTIONS</div>
     {['text','documents'].includes(tab.type) && <>
       <label>Precision<select value={o.precision} onChange={event => change({ precision: event.target.value as Options['precision'] })}><option>smart</option><option>word</option><option>character</option></select></label>
-      {toggle('ignoreCase')}{toggle('ignoreWhitespace')}{toggle('hideUnchanged')}{toggle('wrap')}{toggle('syncScroll')}
+      {toggle('ignoreCase')}{toggle('ignoreWhitespace')}{toggle('hideUnchanged')}{toggle('wrap')}{toggle('syncScroll')}{tab.type === 'text' && toggle('syncLineHeights', 'Sync Line-Heights')}
       <label>Ignore rules<textarea value={o.ignoreRules.map(rule => (rule.regex ? 're:' : '') + rule.value).join('\n')} onChange={event => change({ ignoreRules: event.target.value.split('\n').filter(Boolean).map(value => ({ value: value.startsWith('re:') ? value.slice(3) : value, regex: value.startsWith('re:') })) })} placeholder="One rule per line; prefix regex with re:" /></label>
     </>}
     {tab.type === 'text' && toggle('syntaxHighlight')}
     {tab.type === 'images' && <>
-      <label>View<select value={o.view} onChange={event => change({ view: event.target.value })}>{['split','slider','fade','flicker','subtract','highlight','ocr','rich-ocr','details'].map(view => <option key={view} value={view}>{view}</option>)}</select></label>
-      <label>Reveal / opacity<input type="range" min="0" max="100" value={o.opacity} onChange={event => change({ opacity: Number(event.target.value) })} /></label>
-      <label>Pixel threshold<input type="number" min="0" max="255" value={o.threshold} onChange={event => change({ threshold: Number(event.target.value) })} /></label>
-      <label>Minimum region size<input type="number" min="1" value={o.minRegionSize} onChange={event => change({ minRegionSize: Number(event.target.value) })} /></label>
-      <label>Group regions within pixels<input type="number" min="0" max="100" value={o.regionGap} onChange={event => change({ regionGap: Number(event.target.value) })} /></label>
-      {toggle('autoAlign')}
-      <label>Horizontal offset<input type="number" value={o.offsetX} onChange={event => change({ offsetX: Number(event.target.value) })} /></label>
-      <label>Vertical offset<input type="number" value={o.offsetY} onChange={event => change({ offsetY: Number(event.target.value) })} /></label>
-      <label>Scale %<input type="number" min="10" max="400" value={o.scale} onChange={event => change({ scale: Number(event.target.value) })} /></label>
-      <label>Rotation °<input type="number" min="-180" max="180" value={o.rotation} onChange={event => change({ rotation: Number(event.target.value) })} /></label>
-      <label>Perspective horizontal %<input type="number" min="-45" max="45" value={o.perspectiveX} onChange={event => change({ perspectiveX: Number(event.target.value) })} /></label>
-      <label>Perspective vertical %<input type="number" min="-45" max="45" value={o.perspectiveY} onChange={event => change({ perspectiveY: Number(event.target.value) })} /></label>
-      {toggle('flipX')}{toggle('flipY')}
-      <label>Scan preset<select value="" onChange={event => { const preset = tab.imagePresets?.find(item => item.name === event.target.value); if (preset) change(preset.options); }}><option value="">Choose preset…</option>{tab.imagePresets?.map(preset => <option key={preset.name}>{preset.name}</option>)}</select></label>
-      <button onClick={() => { const name = window.prompt('Name this image scan preset'); if (name) onImagePreset(name); }}>Save current preset</button>
-      {toggle('ocr')}
-      {(tab.left?.name.toLowerCase().endsWith('.pdf') || tab.right?.name.toLowerCase().endsWith('.pdf')) && <><label>PDF page<input type="number" min="1" value={o.page} onChange={event => change({ page: Number(event.target.value) })} /></label><label>PDF password<input type="password" value={o.password || ''} onChange={event => change({ password: event.target.value })} /></label></>}
+      <label>View mode<select value={imageView} onChange={event => {
+        const nextView = imageViewOrDefault(event.target.value);
+        const opacity = imageView === 'slider' && nextView !== 'slider' ? revealToPercentage(o.opacity)
+          : imageView !== 'slider' && nextView === 'slider' ? percentageToReveal(o.opacity) : o.opacity;
+        change({ view: nextView, opacity });
+      }}>{imageViews.map(view => <option key={view} value={view}>{view}</option>)}</select></label>
+      {imageView === 'split' && <button type="button" className="split-orientation-toggle" aria-pressed={o.splitOrientation === 'horizontal'} title={`Switch to ${o.splitOrientation === 'horizontal' ? 'vertical' : 'horizontal'} split`} onClick={() => change({ splitOrientation: o.splitOrientation === 'horizontal' ? 'vertical' : 'horizontal' })}>
+        <MaterialIcon name={o.splitOrientation === 'horizontal' ? 'horizontal_split' : 'vertical_split'} />
+        {o.splitOrientation === 'horizontal' ? 'Horizontal split' : 'Vertical split'}
+      </button>}
+      {(imageView === 'slider' || imageView === 'fade') && <label>{imageView === 'slider' ? 'Reveal position' : 'Overlay opacity'}<ScrubbableNumber min={0} max={percentageMaximum} value={imageView === 'slider' ? revealToPercentage(o.opacity) : o.opacity} onChange={value => change({ opacity: imageView === 'slider' ? percentageToReveal(value) : value })} /></label>}
+      {imageView === 'slider' && <label className="check"><input type="checkbox" checked={o.sliderNoOverlap} onChange={event => change({ sliderNoOverlap: event.target.checked })} />No overlap</label>}
+      {(imageView === 'slider' || imageView === 'fade') && <details className="advanced-options transition-options"><summary>Automatic transition</summary><div><label className="transition-duration" style={{ '--transition-progress': Math.max(0, Math.min(1, o.opacity / (imageView === 'slider' ? revealInternalMaximum : percentageMaximum))) } as React.CSSProperties}>Sweep duration (ms)<span className="scrubbable-with-progress"><ScrubbableNumber min={1} max={1000} value={o.transitionMs ?? 500} onChange={transitionMs => change({ transitionMs })} /><span className="option-progress"><span className="transition-progress-fill" /></span></span></label><button type="button" onClick={onToggleTransition}>{transitionRunning ? 'Pause' : 'Start'}</button></div></details>}
+      {imageView === 'flicker' && <><label className="flicker-interval" style={{ '--flicker-duration': `${Math.max(1, o.flickerMs)}ms` } as React.CSSProperties}>Flicker interval (ms)<span className="scrubbable-with-progress"><ScrubbableNumber min={1} max={1000} value={o.flickerMs} onChange={flickerMs => change({ flickerMs })} /><span className="option-progress"><span ref={flickerProgressRef} className="flicker-progress-fill" /></span></span></label><div className="flicker-actions"><button type="button" onClick={onToggleFlickerPaused}>{flickerPaused ? 'Start' : 'Pause'}</button><button type="button" onClick={onManualFlick}>Manual flick</button></div></>}
+      {isOcrView && toggle('ocr')}
+      {(isVisualImageView || usesImageTransform || usesPdfInput) && <details className="advanced-options"><summary>Advanced</summary><div>
+        {isVisualImageView && <>
+          <label>Pixel threshold<input type="number" min="0" max="255" value={o.threshold} onChange={event => change({ threshold: Number(event.target.value) })} /></label>
+          <label>Minimum region size<input type="number" min="1" value={o.minRegionSize} onChange={event => change({ minRegionSize: Number(event.target.value) })} /></label>
+          <label>Group regions within pixels<input type="number" min="0" max="100" value={o.regionGap} onChange={event => change({ regionGap: Number(event.target.value) })} /></label>
+        </>}
+        {usesImageTransform && <>
+          {toggle('autoAlign')}
+          <label>Horizontal offset<input type="number" value={o.offsetX} onChange={event => change({ offsetX: Number(event.target.value) })} /></label>
+          <label>Vertical offset<input type="number" value={o.offsetY} onChange={event => change({ offsetY: Number(event.target.value) })} /></label>
+          <label>Scale %<input type="number" min="10" max="400" value={o.scale} onChange={event => change({ scale: Number(event.target.value) })} /></label>
+          <label>Rotation °<input type="number" min="-180" max="180" value={o.rotation} onChange={event => change({ rotation: Number(event.target.value) })} /></label>
+          <label>Perspective horizontal %<input type="number" min="-45" max="45" value={o.perspectiveX} onChange={event => change({ perspectiveX: Number(event.target.value) })} /></label>
+          <label>Perspective vertical %<input type="number" min="-45" max="45" value={o.perspectiveY} onChange={event => change({ perspectiveY: Number(event.target.value) })} /></label>
+          {toggle('flipX')}{toggle('flipY')}
+        </>}
+        {usesPdfInput && <><label>PDF page<input type="number" min="1" value={o.page} onChange={event => change({ page: Number(event.target.value) })} /></label><label>PDF password<input type="password" value={o.password || ''} onChange={event => change({ password: event.target.value })} /></label></>}
+      </div></details>}
     </>}
     {tab.type === 'excel' && <><label>View<select value={o.view} onChange={event => change({ view: event.target.value })}><option value="split">Side by side</option><option value="redline">Redline grid</option><option value="four">Four panes</option><option value="details">File details</option></select></label>
       {toggle('formulas')}{toggle('alignRows')}{toggle('alignColumns')}{toggle('ignoreCase')}{toggle('ignoreWhitespace')}{toggle('hideRows')}{toggle('hideColumns')}
@@ -396,43 +968,84 @@ function OptionsPanel({ tab, change, onNotes, onImagePreset }: { tab: CompareTab
     {tab.type === 'folders' && <>{toggle('compareMetadata')}<label>Exclude paths<textarea value={o.exclusions.join('\n')} onChange={event => change({ exclusions: event.target.value.split('\n').filter(Boolean) })} /></label></>}
     {tab.type === 'documents' && <><label>View<select value={o.view} onChange={event => change({ view: event.target.value })}>{['split','rich','plain','image','ocr','redline'].map(view => <option key={view}>{view}</option>)}</select></label>{toggle('ocr')}
       {(tab.left?.name.toLowerCase().endsWith('.pdf') || tab.right?.name.toLowerCase().endsWith('.pdf')) && <><label>PDF page<input type="number" min="1" value={o.page} onChange={event => change({ page: Number(event.target.value) })} /></label><label>PDF password<input type="password" value={o.password || ''} onChange={event => change({ password: event.target.value })} /></label></>}</>}
-    <label>Notes<textarea value={tab.notes || ''} onChange={event => onNotes(event.target.value)} placeholder="Notes for this comparison" /></label>
   </aside>;
 }
 function App() {
   const [tabs, setTabs] = useState<CompareTab[]>([]);
   const tabsRef = useRef<CompareTab[]>([]);
   const compareTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
-  const projectId = useRef<string | null>(null);
+  const flickerFrames = useRef(new Map<string, boolean>());
+  const flickerProgressRef = useRef<HTMLDivElement>(null);
+  const [pausedFlickerTabs, setPausedFlickerTabs] = useState<Set<string>>(new Set());
+  const [manualFlickToken, setManualFlickToken] = useState(0);
+  const [runningTransitionTabs, setRunningTransitionTabs] = useState<Set<string>>(new Set());
   const [activeId, setActiveId] = useState<string | null>(null);
   const activeIdRef = useRef<string | null>(null);
   const [welcome, setWelcome] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [prefs, setPrefs] = useState<Preferences>({ restoreTabs: false, recentProjects: [] });
+  const [prefs, setPrefs] = useState<Preferences>({ restoreTabs: true, recentCompareLimit: 10, recentCompares: [] });
+  const prefsRef = useRef<Preferences>({ restoreTabs: true, recentCompareLimit: 10, recentCompares: [] });
+  const [contextMenuInstalled, setContextMenuInstalled] = useState<boolean | null>(null);
+  const [contextMenuBusy, setContextMenuBusy] = useState(false);
+  const [appDataPath, setAppDataPath] = useState('');
   const [pairing, setPairing] = useState<{ inputs: Input[]; type: Mode } | null>(null);
   const [notice, setNotice] = useState('');
+  const [noticeTone, setNoticeTone] = useState<'error' | 'success'>('error');
+  const [noticeSequence, setNoticeSequence] = useState(0);
+  const [dropTarget, setDropTarget] = useState<'left' | 'right' | 'multiple' | null>(null);
+  const primaryWindow = useRef(false);
   const active = tabs.find(tab => tab.id === activeId) || null;
   useEffect(() => { activeIdRef.current = activeId; }, [activeId]);
-  function invalidDrop(message: string) {
+  useEffect(() => {
+    window.api.reportActiveTab(active ? { type: active.type, left: Boolean(active.left), right: Boolean(active.right) } : null);
+  }, [active?.id, active?.type, Boolean(active?.left), Boolean(active?.right)]);
+  useEffect(() => {
+    if (!settingsOpen) return;
+    setContextMenuInstalled(null);
+    void Promise.all([window.api.getShellContextMenuInstalled(), window.api.getAppDataPath()]).then(([installed, dataPath]) => {
+      setContextMenuInstalled(installed);
+      setAppDataPath(dataPath);
+    }).catch(error => showNotice('Unable to load system settings: ' + humanError(error)));
+  }, [settingsOpen]);
+  function showNotice(message: string, tone: 'error' | 'success' = 'error') {
+    setNoticeTone(tone);
     setNotice(message);
+    setNoticeSequence(value => value + 1);
+  }
+  useEffect(() => {
+    if (!notice || noticeTone === 'error') return;
+    const timer = setTimeout(() => setNotice(''), 4000);
+    return () => clearTimeout(timer);
+  }, [notice, noticeTone, noticeSequence]);
+  function invalidDrop(message: string) {
+    showNotice(message);
     document.body.classList.add('invalid-drop');
     setTimeout(() => document.body.classList.remove('invalid-drop'), 1800);
   }
   const commitTabs = (next: CompareTab[]) => { tabsRef.current = next; setTabs(next); };
   const patchTab = (id: string, patch: Partial<CompareTab>) => commitTabs(tabsRef.current.map(tab => tab.id === id ? { ...tab, ...patch } : tab));
   useEffect(() => {
-    window.api.getSettings().then(async value => {
+    window.api.takeWindowBootstrap().then(async bootstrap => {
+      primaryWindow.current = bootstrap.primary;
+      const value = await window.api.getSettings();
+      prefsRef.current = value;
       setPrefs(value);
-      if (value.restoreTabs && value.tabs?.length) {
-        const restored = value.tabs.map(tab => ({ ...tab, result: null, busy: false, progress: 0, options: { ...defaults(), ...tab.options } }));
-        commitTabs(restored); setActiveId(restored[0].id);
+      if (bootstrap.initialTab) {
+        commitTabs([bootstrap.initialTab]); setActiveId(bootstrap.initialTab.id); setWelcome(false);
+        if (bootstrap.initialTab.left && bootstrap.initialTab.right && !bootstrap.initialTab.result) void run(bootstrap.initialTab);
+      } else if (bootstrap.primary && value.restoreTabs && value.tabs?.length) {
+        const restored = value.tabs.map(tab => ({ ...tab, result: null, busy: false, progress: 0, options: { ...defaults(), ...tab.options, ...(tab.type === 'images' ? { view: imageViewOrDefault(tab.options?.view || value.lastImageView) } : {}) } }));
+        const restoredActiveId = restored.some(tab => tab.id === value.activeTabId) ? value.activeTabId! : restored[0].id;
+        commitTabs(restored); setActiveId(restoredActiveId);
         restored.filter(tab => tab.left && tab.right).forEach(tab => void run(tab));
       }
-      const paths = await window.api.takeStartupPaths();
-      if (paths.length) {
-        try { routeInputs(await window.api.describeInputs(paths)); }
-        catch (error) { setNotice(humanError(error)); }
-      } else if (!value.restoreTabs || !value.tabs?.length) setWelcome(true);
+      const requests = bootstrap.primary ? await window.api.takeStartupOpenRequests() : [];
+      if (requests.length) {
+        for (const request of requests) {
+          try { routeInputs(await window.api.describeInputs(request.paths), undefined, undefined, request.reuseExisting ? 'reuse' : 'new'); }
+          catch (error) { showNotice(humanError(error)); }
+        }
+      } else if (!bootstrap.initialTab && (!bootstrap.primary || !value.restoreTabs || !value.tabs?.length)) setWelcome(true);
     });
     const stopCompare = window.api.onCompareEvent((event: CompareEvent) => {
       const tab = tabsRef.current.find(item => item.jobId === event.id);
@@ -442,20 +1055,25 @@ function App() {
         const scan = tab.type === 'images' ? { at: new Date().toISOString(), count: event.result.count, changed: event.result.changed, options: tab.options } : null;
         patchTab(tab.id, { result: event.result, busy: false, progress: 100, phase: 'Complete', error: undefined,
           ...(scan ? { scans: [...(tab.scans || []), scan].slice(-50) } : {}) });
+        if (tab.left?.path && tab.right?.path) void window.api.getSettings().then(value => { prefsRef.current = value; setPrefs(value); });
       }
       if (event.kind === 'error') patchTab(tab.id, { busy: false, error: event.error || 'Comparison failed.' });
     });
-    const stopOpen = window.api.onOpenPaths(paths => {
-      window.api.describeInputs(paths).then(inputs => routeInputs(inputs)).catch(error => setNotice(humanError(error)));
+    const stopOpen = window.api.onOpenPaths((paths, mode) => {
+      window.api.describeInputs(paths).then(inputs => routeInputs(inputs, undefined, undefined, mode)).catch(error => showNotice(humanError(error)));
     });
-    return () => { stopCompare(); stopOpen(); };
+    const stopTransferred = window.api.onRemoveTransferredTab((id, closeWindow) => {
+      removeTransferredTab(id);
+      if (closeWindow) void window.api.closeWindow();
+    });
+    return () => { stopCompare(); stopOpen(); stopTransferred(); };
   }, []);
   useEffect(() => {
     const timer = setTimeout(() => {
-      if (tabs.length || prefs.restoreTabs) window.api.setSettings({ tabs: tabs.map(tab => ({ ...tab, result: null, busy: false, jobId: undefined })) });
+      if (primaryWindow.current && (tabs.length || prefs.restoreTabs)) window.api.setSettings({ tabs: tabs.map(tab => ({ ...tab, result: null, busy: false, jobId: undefined })), activeTabId: activeId || undefined });
     }, 600);
     return () => clearTimeout(timer);
-  }, [tabs, prefs.restoreTabs]);
+  }, [tabs, activeId, prefs.restoreTabs]);
   async function run(tab: CompareTab) {
     if (!tab.left || !tab.right) return;
     if (tab.jobId) await window.api.cancelCompare(tab.jobId);
@@ -476,27 +1094,34 @@ function App() {
   function setInput(tab: CompareTab, side: 'left' | 'right', input: Input) {
     if (!input.types.includes(tab.type)) { invalidDrop('Unable to compare ' + input.name + ' as ' + tab.type + '.'); return; }
     const old = tab[side];
-    const next = { ...tab, [side]: input, available: [...tab.available.filter(item => item.id !== input.id), ...(old && old.id !== input.id ? [old] : [])], result: null, decisions: undefined, dirty: true };
+    const next = { ...tab, [side]: input, available: [...tab.available.filter(item => item.id !== input.id), ...(old && old.id !== input.id ? [old] : [])], result: null, decisions: undefined };
     patchTab(tab.id, next);
     if (tab.type === 'text') schedule(next); else void run(next);
   }
   function changeOptions(tab: CompareTab, patch: Partial<Options>) {
-    const next = { ...tab, options: { ...tab.options, ...patch }, dirty: true };
+    const current = tabsRef.current.find(item => item.id === tab.id) || tab;
+    const next = { ...current, options: { ...current.options, ...patch } };
     patchTab(tab.id, next);
-    if (tab.left && tab.right && (Object.keys(patch).some(key => !['view','opacity','wrap','syncScroll','hideUnchanged','hideRows','hideColumns','syntaxHighlight'].includes(key)) || (tab.type === 'documents' && patch.view === 'image'))) schedule(next);
+    if (tab.type === 'images' && patch.view !== undefined) {
+      const lastImageView = imageViewOrDefault(patch.view);
+      prefsRef.current = { ...prefsRef.current, lastImageView };
+      void window.api.setSettings({ lastImageView }).then(value => { prefsRef.current = value; setPrefs(value); });
+    }
+    if (current.left && current.right && (Object.keys(patch).some(key => !['view','opacity','sliderNoOverlap','flickerMs','transitionMs','wrap','syncScroll','syncLineHeights','hideUnchanged','hideRows','hideColumns','syntaxHighlight'].includes(key)) || (current.type === 'documents' && patch.view === 'image'))) schedule(next);
   }
   function addTab(type: Mode, left: Input | null = null, right: Input | null = null, available: Input[] = []) {
-    const tab = newTab(type, left, right, available); commitTabs([...tabsRef.current, tab]); setActiveId(tab.id); setWelcome(false);
+    const tab = newTab(type, left, right, available, imageViewOrDefault(prefsRef.current.lastImageView)); commitTabs([...tabsRef.current, tab]); setActiveId(tab.id); setWelcome(false);
     if (left && right) void run(tab);
   }
-  function routeInputs(inputs: Input[], preferred?: Mode, side?: 'left' | 'right') {
+  function routeInputs(inputs: Input[], preferred?: Mode, side?: 'left' | 'right', external: false | 'new' | 'reuse' = false) {
     if (!inputs.length) return;
     const current = tabsRef.current.find(tab => tab.id === activeIdRef.current) || null;
     if (inputs.length === 1) {
       const item = inputs[0];
-      if (side && current) { setInput(current, side, item); return; }
-      if (current && (!current.left || !current.right) && item.types.includes(current.type)) { setInput(current, current.left ? 'right' : 'left', item); setWelcome(false); return; }
-      addTab(preferred && item.types.includes(preferred) ? preferred : item.types[0], item);
+      if (side && current) { setInput(current, side, item); setWelcome(false); return; }
+      const acceptedTypes = external ? externalTypes(item) : item.types;
+      if (external === 'reuse' && current && Boolean(current.left) !== Boolean(current.right) && acceptedTypes.includes(current.type)) { setInput(current, current.left ? 'right' : 'left', item); setWelcome(false); return; }
+      addTab(preferred && acceptedTypes.includes(preferred) ? preferred : acceptedTypes[0], side === 'right' ? null : item, side === 'right' ? item : null);
       return;
     }
     const type = compatible(inputs, preferred);
@@ -504,45 +1129,93 @@ function App() {
     if (inputs.length === 2) addTab(type, inputs[0], inputs[1]);
     else { setPairing({ inputs, type }); setWelcome(false); }
   }
-  async function fromDrop(event: React.DragEvent, side?: 'left' | 'right') {
+  async function fromDrop(event: React.DragEvent) {
     event.preventDefault(); event.stopPropagation();
     document.body.classList.remove('dragging');
-    try { const paths = window.api.pathsForFiles(event.dataTransfer.files); routeInputs(await window.api.describeInputs(paths), active?.type, side); }
+    setDropTarget(null);
+    try {
+      const paths = window.api.takeDroppedPaths();
+      if (!paths.length) { invalidDrop('No local files or folders were found in that drop.'); return; }
+      const side = paths.length === 1 ? (event.clientX < window.innerWidth / 2 ? 'left' : 'right') : undefined;
+      routeInputs(await window.api.describeInputs(paths), active?.type, side);
+    }
     catch (error) { invalidDrop(humanError(error)); }
   }
   async function browse(tab: CompareTab, side: 'left' | 'right') {
     try { const inputs = await window.api.browseInputs(tab.type); if (inputs.length === 1) setInput(tab, side, inputs[0]); else routeInputs(inputs, tab.type); }
-    catch (error) { setNotice(humanError(error)); }
+    catch (error) { showNotice(humanError(error)); }
   }
   function closeTab(id: string) {
-    const tab = tabsRef.current.find(item => item.id === id);
-    if (tab?.dirty && !window.confirm('Close this comparison without saving it?')) return;
     const pending = compareTimers.current.get(id);
     if (pending) clearTimeout(pending);
     compareTimers.current.delete(id);
+    flickerFrames.current.delete(id);
+    setPausedFlickerTabs(current => { const next = new Set(current); next.delete(id); return next; });
+    setRunningTransitionTabs(current => { const next = new Set(current); next.delete(id); return next; });
     const next = tabsRef.current.filter(item => item.id !== id); commitTabs(next);
     if (activeId === id) setActiveId(next.at(-1)?.id || null);
     if (!next.length) setWelcome(true);
   }
-  async function save(): Promise<boolean> {
-    try {
-      const project = await window.api.saveProject({ id: projectId.current || undefined, name: active?.title || 'Comparisons', tabs: tabsRef.current });
-      projectId.current = project.id;
-      commitTabs(tabsRef.current.map(tab => ({ ...tab, dirty: false })));
-      const next = await window.api.getSettings(); setPrefs(next); setNotice('Saved to ' + project.path);
-      return true;
-    } catch (error) { setNotice(humanError(error)); return false; }
+  function removeTransferredTab(id: string) {
+    const tab = tabsRef.current.find(item => item.id === id);
+    if (tab?.jobId) void window.api.cancelCompare(tab.jobId);
+    const pending = compareTimers.current.get(id);
+    if (pending) clearTimeout(pending);
+    compareTimers.current.delete(id);
+    const next = tabsRef.current.filter(item => item.id !== id);
+    commitTabs(next);
+    if (activeIdRef.current === id) setActiveId(next.at(-1)?.id || null);
   }
-  async function load(file: string) {
-    try { const project = await window.api.loadProject(file); projectId.current = project.id; const loaded = project.tabs.map(tab => ({ ...tab, result: null, busy: false, options: { ...defaults(), ...tab.options } })); commitTabs(loaded); setActiveId(loaded[0]?.id || null); setWelcome(false); loaded.filter(tab => tab.left && tab.right).forEach(tab => void run(tab)); }
-    catch (error) { setNotice(humanError(error)); }
+  function receiveTab(tab: CompareTab, to: string | null, after: boolean) {
+    const next = [...tabsRef.current];
+    const target = to ? next.findIndex(item => item.id === to) : next.length;
+    next.splice(target < 0 ? next.length : target + (after ? 1 : 0), 0, tab);
+    commitTabs(next); setActiveId(tab.id); setWelcome(false);
+    if (tab.left && tab.right && !tab.result) void run(tab);
+  }
+  async function openRecent(item: Preferences['recentCompares'][number]) {
+    try {
+      const [left, right] = await window.api.describeInputs([item.left, item.right]);
+      if (!left.types.includes(item.type) || !right.types.includes(item.type)) throw new Error('These files can no longer be compared as ' + item.type + '.');
+      addTab(item.type, left, right);
+    } catch (error) { showNotice(humanError(error)); }
+  }
+  async function removeRecent(item: Preferences['recentCompares'][number]) {
+    const recentCompares = prefsRef.current.recentCompares.filter(recent => recent.type !== item.type || recent.left !== item.left || recent.right !== item.right);
+    const next = { ...prefsRef.current, recentCompares };
+    prefsRef.current = next;
+    setPrefs(next);
+    try {
+      const value = await window.api.setSettings({ recentCompares });
+      prefsRef.current = value;
+      setPrefs(value);
+    } catch (error) { showNotice('Unable to remove the recent comparison: ' + humanError(error)); }
   }
   async function exportResult(tab: CompareTab, format: string) {
     if (!tab.result) return;
     try {
       const chunks = tab.type === 'documents' ? decidedChunks(tab.result.chunks || [], tab.decisions) : tab.result.chunks || [];
-      if (format === 'png') await window.api.saveExport({ name: tab.title + '.png', content: tab.result.diffData.split(',')[1], base64: true, filters: [{ name: 'PNG', extensions: ['png'] }] });
-      else if (format === 'text') await window.api.saveExport({ name: tab.title + '.txt', content: tab.result.rightText || '', filters: [{ name: 'Text', extensions: ['txt'] }] });
+      if (format === 'image-view' || format === 'image-view-clipboard') {
+        const toClipboard = format === 'image-view-clipboard';
+        await window.api.exportImageView({ title: tab.title, result: tab.result, options: tab.options, toClipboard, flickerRight: flickerFrames.current.get(tab.id) });
+        if (toClipboard) showNotice('Image view copied to the clipboard.', 'success');
+      }
+      else if (format.startsWith('text-')) {
+        const [, destination, kind, style] = format.split('-');
+        const toClipboard = destination === 'clipboard';
+        const textKind = kind as 'original' | 'changed' | 'unified';
+        await window.api.exportText({
+          title: tab.title,
+          leftText: String(tab.result.leftText || ''),
+          rightText: String(tab.result.rightText || ''),
+          leftName: tab.left?.name || 'Original',
+          rightName: tab.right?.name || 'Changed',
+          kind: textKind,
+          fenced: style === 'fenced',
+          toClipboard
+        });
+        if (toClipboard) showNotice(`${textKind === 'unified' ? style === 'fenced' ? 'Diff-formatted unified diff' : 'Unified diff' : textKind === 'original' ? 'Original text' : 'Changed text'} copied to the clipboard.`, 'success');
+      }
       else if (format === 'docx' || format === 'tracked') await window.api.exportDocx({ title: tab.title, chunks, tracked: format === 'tracked' });
       else if (format === 'pdfside') await window.api.exportPdf({ title: tab.title, layout: 'side', leftText: tab.result.leftText, rightText: tab.result.rightText });
       else if (format === 'pdfredline') await window.api.exportPdf({ title: tab.title, layout: 'redline', chunks });
@@ -557,60 +1230,73 @@ function App() {
           : tab.type === 'excel' ? tab.result.changed.map((item: any) => `${tab.result.leftName} ${item.leftRow && item.leftColumn != null ? XLSX.utils.encode_cell({ r: item.leftRow - 1, c: item.leftColumn }) : '—'} / ${tab.result.rightName} ${item.rightRow && item.rightColumn != null ? XLSX.utils.encode_cell({ r: item.rightRow - 1, c: item.rightColumn }) : '—'}: ${item.left} → ${item.right}${item.leftFormula || item.rightFormula ? ` [${item.leftFormula} → ${item.rightFormula}]` : ''}`)
           : tab.type === 'images' ? tab.result.regions.map((item: any, index: number) => `Region ${index + 1}: (${item.x}, ${item.y}) ${item.width} × ${item.height}, ${item.pixels} changed pixels`)
           : tab.result.chunks?.map((chunk: any) => chunk.type.toUpperCase() + ' ' + chunk.text) || [];
-        await window.api.exportPdf({ title: tab.title, lines });
+        await window.api.exportPdf({ title: tab.title, lines, ...(tab.type === 'images' ? { imageView: { result: tab.result, options: tab.options, flickerRight: flickerFrames.current.get(tab.id) } } : {}) });
       }
-    } catch (error) { setNotice(humanError(error)); }
+    } catch (error) { showNotice(humanError(error)); }
   }
   async function openFolderPair(left: string, right: string) {
     try { routeInputs(await window.api.describeInputs([left, right])); }
-    catch (error) { setNotice(humanError(error)); }
+    catch (error) { showNotice(humanError(error)); }
   }
   function appClose() {
-    if (tabsRef.current.some(tab => tab.dirty) && !window.confirm('Close Norways Diff Checker with unsaved comparisons?')) return;
     void window.api.closeWindow();
   }
-  return <div className="app" onDragOver={event => { if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); document.body.classList.add('dragging'); } }} onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node)) document.body.classList.remove('dragging'); }} onDrop={event => { if (event.dataTransfer.types.includes('Files')) void fromDrop(event); }}>
+  return <div className="app" onDragOverCapture={event => {
+    if (event.dataTransfer.types.includes(tabTokenType)) {
+      event.preventDefault();
+      event.dataTransfer.dropEffect = 'link';
+      document.body.classList.add('detaching-tab');
+      return;
+    }
+    if (!event.dataTransfer.types.includes('Files')) return;
+    const count = Array.from(event.dataTransfer.items).filter(item => item.kind === 'file').length || event.dataTransfer.files.length;
+    setDropTarget(count === 1 ? (event.clientX < window.innerWidth / 2 ? 'left' : 'right') : 'multiple');
+  }} onDragOver={event => { if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); document.body.classList.add('dragging'); } }} onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node)) { document.body.classList.remove('dragging', 'detaching-tab'); setDropTarget(null); } }} onDrop={event => {
+    if (event.dataTransfer.types.includes(tabTokenType)) { event.preventDefault(); document.body.classList.remove('detaching-tab'); return; }
+    if (event.dataTransfer.types.includes('Files')) void fromDrop(event);
+  }}>
     <Titlebar tabs={tabs} active={activeId} onSelect={setActiveId} onNew={() => setWelcome(true)} onClose={closeTab}
-      onReorder={(from, to) => { const next = [...tabsRef.current]; const fromIndex = next.findIndex(tab => tab.id === from), toIndex = next.findIndex(tab => tab.id === to); if (fromIndex >= 0 && toIndex >= 0 && fromIndex !== toIndex) { next.splice(toIndex, 0, next.splice(fromIndex, 1)[0]); commitTabs(next); } }}
-      onSettings={() => setSettingsOpen(true)} onSave={() => void save()} onAppClose={appClose} />
+      onReorder={(from, to, after) => { const next = [...tabsRef.current]; const fromIndex = next.findIndex(tab => tab.id === from), toIndex = next.findIndex(tab => tab.id === to); if (fromIndex < 0 || toIndex < 0 || fromIndex === toIndex) return; const moved = next.splice(fromIndex, 1)[0]; const adjustedTarget = next.findIndex(tab => tab.id === to); next.splice(adjustedTarget + (after ? 1 : 0), 0, moved); commitTabs(next); }}
+      onReceive={receiveTab}
+      onSettings={() => setSettingsOpen(true)} onAppClose={appClose} />
     {active ? <main className="workspace">
-      <div className="workspace-top"><div><span className="small-caps">{active.type.toUpperCase()} COMPARISON</span><input className="tab-title-edit" value={active.title} onChange={event => patchTab(active.id, { title: event.target.value, dirty: true })} /></div>
+      <div className="workspace-top"><div><span className="small-caps">{active.type.toUpperCase()} COMPARISON</span><input className="tab-title-edit" value={active.title} onChange={event => patchTab(active.id, { title: event.target.value })} /></div>
         <div className="workspace-actions"><span className="change-count">{active.result?.count ?? 0} changes</span>
           {active.busy ? <button onClick={() => { if (active.jobId) void window.api.cancelCompare(active.jobId); patchTab(active.id, { busy: false }); }}>Cancel · {active.progress}%</button> : <button onClick={() => void run(active)}>Compare</button>}
           <select aria-label="Export comparison" value="" disabled={!active.result} onChange={event => { if (event.target.value) void exportResult(active, event.target.value); }}>
             <option value="">Export…</option>
-            {active.type === 'images' && <option value="png">PNG difference</option>}
-            {active.type === 'text' && <option value="text">Changed text</option>}
+            {active.type === 'images' && <><option value="image-view">Image View</option><option value="image-view-clipboard">Image View to Clipboard</option></>}
+            {active.type === 'text' && <><optgroup label="Save to File"><option value="text-file-original">Original Text</option><option value="text-file-changed">Changed Text</option><option value="text-file-unified">Unified Diff</option></optgroup><optgroup label="Copy to Clipboard"><option value="text-clipboard-original">Original Text</option><option value="text-clipboard-changed">Changed Text</option><option value="text-clipboard-unified">Unified Diff</option><option value="text-clipboard-unified-fenced">Diff Format</option></optgroup></>}
             {active.type === 'documents' && <><option value="docx">Word redline</option><option value="tracked">Word tracked changes</option></>}
             {active.type === 'excel' && <option value="xlsx">Excel change list</option>}
             {active.type === 'documents' && <><option value="pdfside">Side-by-side PDF</option><option value="pdfredline">Redline PDF</option></>}
             <option value="pdf">PDF report</option>
           </select></div></div>
-      <div className="input-row"><InputSlot side="left" input={active.left} available={active.available} type={active.type} onBrowse={() => void browse(active, 'left')} onReplace={input => setInput(active, 'left', input)} onDrop={event => void fromDrop(event, 'left')} />
-        <button className="swap" title="Swap sides" onClick={() => { const next = { ...active, left: active.right, right: active.left, decisions: undefined, dirty: true }; patchTab(active.id, next); void run(next); }}>⇄</button>
-        <InputSlot side="right" input={active.right} available={active.available} type={active.type} onBrowse={() => void browse(active, 'right')} onReplace={input => setInput(active, 'right', input)} onDrop={event => void fromDrop(event, 'right')} /></div>
+      <div className="input-row"><InputSlot side="left" input={active.left} available={active.available} type={active.type} onBrowse={() => void browse(active, 'left')} onReplace={input => setInput(active, 'left', input)} onDrop={event => void fromDrop(event)} />
+            <button className="swap" title="Swap sides" aria-label="Swap sides" onClick={() => { const next = { ...active, left: active.right, right: active.left, decisions: undefined }; patchTab(active.id, next); void run(next); }}><MaterialIcon name="swap_horiz" /></button>
+        <InputSlot side="right" input={active.right} available={active.available} type={active.type} onBrowse={() => void browse(active, 'right')} onReplace={input => setInput(active, 'right', input)} onDrop={event => void fromDrop(event)} /></div>
       {active.error && <div className="error-banner">{active.error}</div>}
       {active.busy && <div className="progress"><div style={{ width: active.progress + '%' }} /></div>}
       <div className="content-layout"><div className="content-main">
         {active.type === 'text' && <TextView tab={active} onText={(side, text) => { const input = { ...(active[side] || { id: crypto.randomUUID(), name: side === 'left' ? 'Original text' : 'Changed text', types: ['text' as Mode] }), text }; setInput(active, side, input); }} onOption={patch => changeOptions(active, patch)} />}
-        {active.type === 'documents' && <DocumentView tab={active} onDecision={(group, decision) => patchTab(active.id, { decisions: { ...active.decisions, [group]: decision }, dirty: true })} onOrder={rightPageOrder => changeOptions(active, { rightPageOrder })} />}
-        {active.type === 'images' && <ImageView tab={active} />}
+        {active.type === 'documents' && <DocumentView tab={active} onDecision={(group, decision) => patchTab(active.id, { decisions: { ...active.decisions, [group]: decision } })} onOrder={rightPageOrder => changeOptions(active, { rightPageOrder })} />}
+        {active.type === 'images' && <ImageView tab={active} onOption={patch => changeOptions(active, patch)} onFlickerChange={right => flickerFrames.current.set(active.id, right)} flickerProgressRef={flickerProgressRef} flickerPaused={pausedFlickerTabs.has(active.id)} manualFlickToken={manualFlickToken} transitionRunning={runningTransitionTabs.has(active.id)} />}
         {active.type === 'excel' && <ExcelView tab={active} onOption={patch => changeOptions(active, patch)} />}
         {active.type === 'folders' && <FolderView tab={active} onOpenPair={(left, right) => void openFolderPair(left, right)} />}
-      </div><OptionsPanel tab={active} change={patch => changeOptions(active, patch)} onNotes={notes => patchTab(active.id, { notes, dirty: true })}
-        onImagePreset={name => {
-          const keys: (keyof Options)[] = ['threshold','minRegionSize','regionGap','autoAlign','offsetX','offsetY','scale','rotation','perspectiveX','perspectiveY','flipX','flipY','page','ocr'];
-          const options = Object.fromEntries(keys.map(key => [key, active.options[key]])) as Partial<Options>;
-          patchTab(active.id, { imagePresets: [...(active.imagePresets || []).filter(item => item.name !== name), { name, options }], dirty: true });
-        }} /></div>
-    </main> : <main className="empty-workspace"><div className="empty-symbol">≠</div><h2>Ready to compare</h2><p>Drop files or folders here, or start a new comparison.</p><button className="primary" onClick={() => setWelcome(true)}>New comparison</button></main>}
-    {welcome && <Welcome recent={prefs.recentProjects || []} onCreate={type => addTab(type)} onLoad={file => void load(file)} onDismiss={() => setWelcome(false)} />}
+      </div><OptionsPanel tab={active} change={patch => changeOptions(active, patch)} flickerProgressRef={flickerProgressRef} flickerPaused={pausedFlickerTabs.has(active.id)} onToggleFlickerPaused={() => setPausedFlickerTabs(current => { const next = new Set(current); if (next.has(active.id)) next.delete(active.id); else next.add(active.id); return next; })} onManualFlick={() => setManualFlickToken(value => value + 1)} transitionRunning={runningTransitionTabs.has(active.id)} onToggleTransition={() => { const starting = !runningTransitionTabs.has(active.id); if (starting) changeOptions(active, { opacity: 0 }); setRunningTransitionTabs(current => { const next = new Set(current); if (starting) next.add(active.id); else next.delete(active.id); return next; }); }} /></div>
+    </main> : <main className="empty-workspace"><MaterialIcon name="difference" className="empty-symbol" /><h2>Ready to compare</h2><p>Drop files or folders here, or start a new comparison.</p><button className="primary" onClick={() => setWelcome(true)}>New comparison</button></main>}
+    {welcome && <Welcome recent={prefs.recentCompares || []} recentEnabled={prefs.recentCompareLimit > 0} onCreate={type => addTab(type)} onOpenRecent={item => void openRecent(item)} onRemoveRecent={item => void removeRecent(item)} onNotice={showNotice} onDismiss={() => setWelcome(false)} />}
+    {dropTarget && <div className={'drop-overlay ' + (dropTarget === 'multiple' ? 'drop-multiple' : 'drop-single')} aria-hidden="true">
+      {dropTarget === 'multiple' ? <span>Drop files or folders to compare</span> : <><div className={'drop-half ' + (dropTarget === 'left' ? 'active' : '')}>Original</div><div className={'drop-half ' + (dropTarget === 'right' ? 'active' : '')}>Changed</div></>}
+    </div>}
     {pairing && <Pairing inputs={pairing.inputs} type={pairing.type} onChangeType={type => setPairing({ ...pairing, type })} onCancel={() => setPairing(null)} onConfirm={(left, right, others, type) => { addTab(type, left, right, others); setPairing(null); }} />}
-    {settingsOpen && <div className="modal-backdrop"><div className="settings-modal modal"><div className="small-caps">PREFERENCES</div><h2>Settings</h2>
-      <label className="check"><input type="checkbox" checked={prefs.restoreTabs} onChange={async event => setPrefs(await window.api.setSettings({ restoreTabs: event.target.checked }))} />Restore previous tabs on startup</label>
-      <p>Comparisons and settings are saved in <code>%LOCALAPPDATA%\NorwaysDiffChecker</code>.</p><footer><button className="primary" onClick={() => setSettingsOpen(false)}>Done</button></footer>
-    </div></div>}
-    {notice && <div className="toast" role="alert">{notice}<button onClick={() => setNotice('')}>×</button></div>}
+    {settingsOpen && <Settings prefs={prefs} appDataPath={appDataPath} contextMenuInstalled={contextMenuInstalled} contextMenuBusy={contextMenuBusy}
+      onPrefs={value => { prefsRef.current = value; setPrefs(value); }} onContextMenuBusy={setContextMenuBusy} onContextMenuInstalled={setContextMenuInstalled}
+      onNotice={showNotice} onClose={() => setSettingsOpen(false)} />}
+    {notice && <div className={'toast ' + noticeTone} role={noticeTone === 'error' ? 'alert' : 'status'} title={noticeTone === 'error' ? 'Click to copy error' : 'Click to dismiss'} onClick={() => {
+      if (noticeTone === 'error') void window.api.writeClipboardText(notice);
+      else setNotice('');
+    }}>{notice}<button title="Dismiss" aria-label="Dismiss notification" onClick={event => { event.stopPropagation(); setNotice(''); }}><MaterialIcon name="close" /></button></div>}
   </div>;
 }
 createRoot(document.getElementById('root')!).render(<App />);

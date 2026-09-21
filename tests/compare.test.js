@@ -9,7 +9,7 @@ const sharp = require('sharp');
 const { Document, Packer, Paragraph, TextRun, ImageRun } = require('docx');
 const PDFDocument = require('pdfkit');
 const JSZip = require('jszip');
-const { docxFromChunks, pdfFromComparison } = require('../electron/exporters');
+const { docxFromChunks, pdfFromComparison, imageViewFromComparison, textFromComparison } = require('../electron/exporters');
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'norways-diff-test-'));
 const workerPath = path.join(__dirname, '../electron/compare-worker.js');
@@ -24,6 +24,14 @@ function run(type, left, right, options = {}) {
     worker.on('error', reject);
     worker.on('exit', code => { if (code === 0 && result !== undefined) resolve(result); else if (code !== 0) reject(new Error('Worker exited with code ' + code)); });
   });
+}
+async function solidPng(width, height, rgba) {
+  const data = Buffer.alloc(width * height * 4);
+  for (let index = 0; index < data.length; index += 4) for (let channel = 0; channel < 4; channel++) data[index + channel] = rgba[channel];
+  return 'data:image/png;base64,' + (await sharp(data, { raw: { width, height, channels: 4 } }).png().toBuffer()).toString('base64');
+}
+async function rawPng(buffer) {
+  return sharp(buffer).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
 }
 test.after(async () => {
   const resolved = path.resolve(root);
@@ -51,6 +59,59 @@ test('text compares edits and respects ignore options', async () => {
   assert.equal(result.count, 0);
   const regex = await run('text', { text: 'Build 123.\n' }, { text: 'Build 456.\n' }, { ignoreRules: [{ value: '\\d+', regex: true }] });
   assert.equal(regex.count, 0);
+});
+test('text exports original, changed, and unified diff content', () => {
+  const request = { leftText: 'first\nold\nlast\n', rightText: 'first\nnew\nlast\n', leftName: 'before.txt', rightName: 'after.txt' };
+  assert.equal(textFromComparison({ ...request, kind: 'original' }), request.leftText);
+  assert.equal(textFromComparison({ ...request, kind: 'changed' }), request.rightText);
+  const unified = textFromComparison({ ...request, kind: 'unified' });
+  assert.match(unified, /--- before\.txt/);
+  assert.match(unified, /\+\+\+ after\.txt/);
+  assert.match(unified, /-old/);
+  assert.match(unified, /\+new/);
+  assert.equal(textFromComparison({ ...request, kind: 'unified', fenced: true }), `\`\`\`diff\n${unified}\`\`\``);
+});
+test('image view export lays out split images using the selected orientation', async () => {
+  const leftData = await solidPng(2, 3, [255, 0, 0, 255]);
+  const rightData = await solidPng(4, 1, [0, 0, 255, 255]);
+  const result = { leftData, rightData, splitLeftData: leftData, splitRightData: rightData };
+  const vertical = await sharp(await imageViewFromComparison({ result, options: { view: 'split', splitOrientation: 'vertical' } })).metadata();
+  const horizontal = await sharp(await imageViewFromComparison({ result, options: { view: 'split', splitOrientation: 'horizontal' } })).metadata();
+  assert.deepEqual({ width: vertical.width, height: vertical.height }, { width: 6, height: 3 });
+  assert.deepEqual({ width: horizontal.width, height: horizontal.height }, { width: 4, height: 4 });
+});
+test('image view export mirrors fade and slider overlap settings', async () => {
+  const leftData = await solidPng(2, 1, [255, 0, 0, 255]);
+  const rightData = await solidPng(2, 1, [0, 0, 255, 128]);
+  const result = { leftData, rightData };
+  const fade = await rawPng(await imageViewFromComparison({ result, options: { view: 'fade', opacity: 50 } }));
+  assert.deepEqual([...fade.data.subarray(0, 4)], [191, 0, 64, 255]);
+  const overlap = await rawPng(await imageViewFromComparison({ result, options: { view: 'slider', opacity: 101, sliderNoOverlap: false } }));
+  const noOverlap = await rawPng(await imageViewFromComparison({ result, options: { view: 'slider', opacity: 101, sliderNoOverlap: true } }));
+  assert.deepEqual([...overlap.data.subarray(0, 4)], [127, 0, 128, 255]);
+  assert.deepEqual([...noOverlap.data.subarray(0, 4)], [0, 0, 255, 128]);
+});
+test('image view export uses the active subtract, highlight, and flicker layers', async () => {
+  const leftData = await solidPng(1, 1, [10, 20, 30, 255]);
+  const rightData = await solidPng(1, 1, [40, 50, 60, 255]);
+  const subtractData = await solidPng(1, 1, [30, 30, 30, 255]);
+  const diffData = await solidPng(1, 1, [240, 75, 75, 255]);
+  const result = { leftData, rightData, subtractData, diffData };
+  const subtract = await rawPng(await imageViewFromComparison({ result, options: { view: 'subtract' } }));
+  const highlight = await rawPng(await imageViewFromComparison({ result, options: { view: 'highlight' } }));
+  const flickerLeft = await rawPng(await imageViewFromComparison({ result, options: { view: 'flicker' }, flickerRight: false }));
+  const flickerRight = await rawPng(await imageViewFromComparison({ result, options: { view: 'flicker' }, flickerRight: true }));
+  assert.deepEqual([...subtract.data], [30, 30, 30, 255]);
+  assert.deepEqual([...highlight.data], [240, 75, 75, 255]);
+  assert.deepEqual([...flickerLeft.data], [10, 20, 30, 255]);
+  assert.deepEqual([...flickerRight.data], [40, 50, 60, 255]);
+});
+test('text line replacements include character-level changes', async () => {
+  const result = await run('text', { text: 'Total: 123\n' }, { text: 'Total: 456\n' });
+  const removed = result.chunks.find(chunk => chunk.type === 'removed');
+  const added = result.chunks.find(chunk => chunk.type === 'added');
+  assert.deepEqual(removed.characterChanges, [{ text: 'Total: ', changed: false }, { text: '123', changed: true }, { text: '\n', changed: false }]);
+  assert.deepEqual(added.characterChanges, [{ text: 'Total: ', changed: false }, { text: '456', changed: true }, { text: '\n', changed: false }]);
 });
 test('spreadsheet detects changed cells and formulas', async () => {
   const a = path.join(root, 'a.xlsx'), b = path.join(root, 'b.xlsx');
@@ -121,6 +182,13 @@ test('image compare detects changed pixels', async () => {
   const result = await run('images', { path: a }, { path: b }, { threshold: 20 });
   assert.equal(result.changed, 64);
   assert.equal(result.regions.length, 1);
+  assert.match(result.splitLeftData, /^data:image\/png;base64,/);
+  assert.match(result.splitRightData, /^data:image\/png;base64,/);
+  assert.deepEqual([result.splitLeftWidth, result.splitLeftHeight, result.splitRightWidth, result.splitRightHeight], [8, 8, 8, 8]);
+  assert.equal(result.displayLeftData, 'data:image/png;base64,' + fs.readFileSync(a).toString('base64'));
+  assert.equal(result.displayRightData, 'data:image/png;base64,' + fs.readFileSync(b).toString('base64'));
+  const generatedMetadata = await sharp(Buffer.from(result.leftData.split(',')[1], 'base64')).metadata();
+  assert.ok(generatedMetadata.icc?.length, 'generated comparison canvases should include an ICC profile');
 });
 test('image compare reports separate changed regions', async () => {
   const a = path.join(root, 'regions-a.png'), b = path.join(root, 'regions-b.png');
@@ -291,4 +359,18 @@ test('side-by-side and redline PDF exports reopen with expected text', async () 
     const text = (await (await pdf.getPage(1)).getTextContent()).items.map(item => item.str).join(' ');
     assert.match(text, request.layout === 'side' ? /Original amount 10/ : /New text/);
   }
+});
+test('image PDF report starts with the composed image view', async () => {
+  const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
+  const imageView = Buffer.from((await solidPng(4, 3, [20, 120, 220, 255])).split(',')[1], 'base64');
+  const bytes = await pdfFromComparison({ title: 'Image comparison', lines: ['Region 1: changed'], imageView });
+  const pdf = await pdfjs.getDocument({ data: new Uint8Array(bytes) }).promise;
+  assert.equal(pdf.numPages, 2);
+  const firstPage = await pdf.getPage(1);
+  const firstText = (await firstPage.getTextContent()).items.map(item => item.str).join(' ');
+  const operators = await firstPage.getOperatorList();
+  assert.match(firstText, /Image comparison/);
+  assert.ok(operators.fnArray.includes(pdfjs.OPS.paintImageXObject));
+  const secondText = (await (await pdf.getPage(2)).getTextContent()).items.map(item => item.str).join(' ');
+  assert.match(secondText, /Region 1: changed/);
 });

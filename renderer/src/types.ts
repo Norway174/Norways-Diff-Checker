@@ -3,6 +3,7 @@ export type Input = { id: string; name: string; path?: string; originalPath?: st
 export type Rule = { value: string; regex: boolean };
 export type Options = {
   view: string;
+  splitOrientation: 'vertical' | 'horizontal';
   precision: 'smart' | 'word' | 'character';
   syntaxHighlight: boolean;
   ignoreCase: boolean;
@@ -10,6 +11,7 @@ export type Options = {
   ignoreRules: Rule[];
   wrap: boolean;
   syncScroll: boolean;
+  syncLineHeights: boolean;
   hideUnchanged: boolean;
   threshold: number;
   minRegionSize: number;
@@ -24,7 +26,9 @@ export type Options = {
   flipX: boolean;
   flipY: boolean;
   opacity: number;
+  sliderNoOverlap: boolean;
   flickerMs: number;
+  transitionMs: number;
   ocr: boolean;
   page: number;
   rightPageOrder: number[];
@@ -55,22 +59,27 @@ export type CompareTab = {
   phase: string;
   jobId?: string;
   error?: string;
-  dirty: boolean;
-  notes?: string;
-  scanManifest?: { relative: string; status: string; leftHash?: string; rightHash?: string }[];
-  imagePresets?: { name: string; options: Partial<Options> }[];
   scans?: { at: string; count: number; changed: number; options: Partial<Options> }[];
   decisions?: Record<number, 'accept' | 'reject'>;
 };
-export type Preferences = { restoreTabs: boolean; recentProjects: { id: string; name: string; path: string }[]; tabs?: CompareTab[] };
+export type RecentCompare = { type: Mode; left: string; right: string };
+export type Preferences = { restoreTabs: boolean; recentCompareLimit: number; recentCompares: RecentCompare[]; lastImageView?: string; tabs?: CompareTab[]; activeTabId?: string };
 export type CompareEvent = { id: string; kind: 'progress' | 'result' | 'error'; value?: number; phase?: string; result?: any; error?: string };
 export type AppApi = {
   minimizeWindow(): Promise<void>; toggleMaximizeWindow(): Promise<boolean>; isWindowMaximized(): Promise<boolean>; closeWindow(): Promise<void>;
+  takeWindowBootstrap(): Promise<{ initialTab: CompareTab | null; primary: boolean }>;
+  reportActiveTab(activeTab: { type: Mode; left: boolean; right: boolean } | null): void;
+  beginTabDrag(tab: CompareTab, tabCount: number): string;
+  endTabDrag(token: string): Promise<void>;
+  acceptTabDrag(token: string): Promise<CompareTab | null>;
+  detachTab(token: string, position: { x: number; y: number }): Promise<boolean>;
+  onRemoveTransferredTab(callback: (id: string, closeWindow: boolean) => void): () => void;
+  onTabDragState(callback: (preview: Pick<CompareTab, 'id' | 'title' | 'type'> | null) => void): () => void;
   onWindowMaximizedChange(callback: (value: boolean) => void): () => void;
-  pathsForFiles(files: FileList | File[]): string[];
+  takeDroppedPaths(): string[];
   describeInputs(paths: string[]): Promise<Input[]>;
-  takeStartupPaths(): Promise<string[]>;
-  onOpenPaths(callback: (paths: string[]) => void): () => void;
+  takeStartupOpenRequests(): Promise<{ paths: string[]; reuseExisting: boolean }[]>;
+  onOpenPaths(callback: (paths: string[], mode: 'reuse' | 'new') => void): () => void;
   browseInputs(type: Mode): Promise<Input[]>;
   readText(input: Input): Promise<string>;
   preview(input: Input): Promise<string | null>;
@@ -78,10 +87,15 @@ export type AppApi = {
   cancelCompare(id: string): Promise<void>;
   onCompareEvent(callback: (event: CompareEvent) => void): () => void;
   getSettings(): Promise<Preferences>; setSettings(patch: Partial<Preferences>): Promise<Preferences>;
-  saveProject(project: { id?: string; name: string; tabs: CompareTab[] }): Promise<{ id: string; path: string }>;
-  loadProject(path: string): Promise<{ id: string; name: string; tabs: CompareTab[] }>;
+  getShellContextMenuInstalled(): Promise<boolean>; setShellContextMenuInstalled(enabled: boolean): Promise<boolean>;
+  getAppDataPath(): Promise<string>; openAppDataFolder(): Promise<void>;
+  openExternalUrl(url: string): Promise<void>;
+  checkForUpdates(): Promise<{ status: 'up-to-date' }>;
+  writeClipboardText(text: string): Promise<void>;
   saveExport(request: { name: string; content: string; base64?: boolean; filters: { name: string; extensions: string[] }[] }): Promise<string | null>;
-  exportPdf(request: { title: string; lines?: string[]; layout?: 'side' | 'redline'; leftText?: string; rightText?: string; chunks?: any[] }): Promise<string | null>;
+  exportImageView(request: { title: string; result: any; options: Options; toClipboard: boolean; flickerRight?: boolean }): Promise<string | null>;
+  exportText(request: { title: string; leftText: string; rightText: string; leftName?: string; rightName?: string; kind: 'original' | 'changed' | 'unified'; fenced?: boolean; toClipboard: boolean }): Promise<string | null>;
+  exportPdf(request: { title: string; lines?: string[]; layout?: 'side' | 'redline'; leftText?: string; rightText?: string; chunks?: any[]; imageView?: { result: any; options: Options; flickerRight?: boolean } }): Promise<string | null>;
   exportDocx(request: { title: string; chunks: any[]; tracked: boolean }): Promise<string | null>;
 };
 declare global { interface Window { api: AppApi } }

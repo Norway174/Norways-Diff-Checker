@@ -18,6 +18,7 @@ const report = (value, phase) => parentPort.postMessage({ kind: 'progress', valu
 const request = workerData;
 const activeChildren = new Set();
 let cancelled = false;
+const srgbPng = image => image.withIccProfile('srgb').png().toBuffer();
 parentPort.on('message', message => { if (message?.kind === 'cancel') { cancelled = true; for (const child of activeChildren) child.kill(); } });
 async function officePdf(input) {
   if (path.extname(input.path).toLowerCase() === '.pdf') return { file: input.path, clean: async () => {} };
@@ -55,6 +56,20 @@ function normalize(value, options = {}) {
   if (options.ignoreCase) text = text.toLowerCase();
   return text;
 }
+function addCharacterChanges(chunks) {
+  for (let index = 0; index < chunks.length;) {
+    if (chunks[index].type === 'same') { index++; continue; }
+    const changed = [];
+    while (index < chunks.length && chunks[index].type !== 'same') changed.push(chunks[index++]);
+    const removed = changed.filter(chunk => chunk.type === 'removed');
+    const added = changed.filter(chunk => chunk.type === 'added');
+    if (removed.length !== 1 || added.length !== 1) continue;
+    const segments = Diff.diffChars(removed[0].text, added[0].text);
+    removed[0].characterChanges = segments.filter(segment => !segment.added).map(segment => ({ text: segment.value, changed: !!segment.removed }));
+    added[0].characterChanges = segments.filter(segment => !segment.removed).map(segment => ({ text: segment.value, changed: !!segment.added }));
+  }
+  return chunks;
+}
 function textDiff(leftText, rightText, options = {}) {
   const left = normalize(leftText, options), right = normalize(rightText, options);
   const parts = options.precision === 'character' ? Diff.diffChars(left, right)
@@ -72,7 +87,7 @@ function textDiff(leftText, rightText, options = {}) {
     if (!part.removed) rightOffset += part.value.length;
     return chunk;
   });
-  return { leftText, rightText, chunks, count: chunks.filter(x => x.type !== 'same').length };
+  return { leftText, rightText, chunks: addCharacterChanges(chunks), count: chunks.filter(x => x.type !== 'same').length };
 }
 async function loadText(input) {
   return input.text !== undefined ? String(input.text) : fsp.readFile(input.path, 'utf8');
@@ -354,12 +369,19 @@ async function perspectiveWarp(bytes, horizontal, vertical) {
 }
 async function compareImages() {
   report(10, 'Decoding images');
+  const originalPngData = async input => path.extname(input.path).toLowerCase() === '.png'
+    ? 'data:image/png;base64,' + (await fsp.readFile(input.path)).toString('base64')
+    : null;
   const image = async input => {
     if (path.extname(input.path).toLowerCase() === '.pdf') return renderPdfPage(input);
-    if (path.extname(input.path).toLowerCase() === '.heic') return Buffer.from(await require('heic-convert')({ buffer: await fsp.readFile(input.path), format: 'PNG' }));
-    return sharp(input.path, { page: request.options.page || 0 }).ensureAlpha().png().toBuffer();
+    const source = path.extname(input.path).toLowerCase() === '.heic'
+      ? Buffer.from(await require('heic-convert')({ buffer: await fsp.readFile(input.path), format: 'PNG' }))
+      : input.path;
+    return srgbPng(sharp(source, { page: request.options.page || 0 }).autoOrient().ensureAlpha());
   };
-  const [sourceLeft, sourceRight] = await Promise.all([image(request.left), image(request.right)]);
+  const [sourceLeft, sourceRight, originalLeftData, originalRightData] = await Promise.all([
+    image(request.left), image(request.right), originalPngData(request.left), originalPngData(request.right)
+  ]);
   let transformed = sharp(sourceRight).ensureAlpha();
   if (request.options.flipX) transformed = transformed.flop();
   if (request.options.flipY) transformed = transformed.flip();
@@ -369,15 +391,16 @@ async function compareImages() {
     transformed = transformed.resize(Math.max(1, Math.round(sourceSize.width * scale)), Math.max(1, Math.round(sourceSize.height * scale)));
   }
   if (Number(request.options.rotation)) transformed = transformed.rotate(Number(request.options.rotation), { background: '#00000000' });
-  const rightImage = await perspectiveWarp(await transformed.png().toBuffer(), Number(request.options.perspectiveX) || 0, Number(request.options.perspectiveY) || 0);
+  const rightImage = await perspectiveWarp(await srgbPng(transformed), Number(request.options.perspectiveX) || 0, Number(request.options.perspectiveY) || 0);
   const [lm, rm] = await Promise.all([sharp(sourceLeft).metadata(), sharp(rightImage).metadata()]);
   const automatic = request.options.autoAlign ? await estimateImageShift(sourceLeft, rightImage, lm, rm) : { x: 0, y: 0 };
   const offsetX = Math.round(Number(request.options.offsetX) || 0) + automatic.x;
   const offsetY = Math.round(Number(request.options.offsetY) || 0) + automatic.y;
+  const rightUntransformed = scale === 1 && !Number(request.options.rotation) && !Number(request.options.perspectiveX) && !Number(request.options.perspectiveY) && !request.options.flipX && !request.options.flipY;
   const leftX = Math.max(0, -offsetX), leftY = Math.max(0, -offsetY);
   const rightX = leftX + offsetX, rightY = leftY + offsetY;
   const width = Math.max(leftX + lm.width, rightX + rm.width), height = Math.max(leftY + lm.height, rightY + rm.height);
-  const canvas = (bytes, x, y) => sharp({ create: { width, height, channels: 4, background: '#00000000' } }).composite([{ input: bytes, left: x, top: y }]).png().toBuffer();
+  const canvas = (bytes, x, y) => srgbPng(sharp({ create: { width, height, channels: 4, background: '#00000000' } }).composite([{ input: bytes, left: x, top: y }]));
   const [left, right] = await Promise.all([canvas(sourceLeft, leftX, leftY), canvas(rightImage, rightX, rightY)]);
   const [a, b] = await Promise.all([sharp(left).ensureAlpha().raw().toBuffer(), sharp(right).ensureAlpha().raw().toBuffer()]);
   const diff = Buffer.alloc(width * height * 4);
@@ -455,6 +478,11 @@ async function compareImages() {
   }
   return {
     leftData: 'data:image/png;base64,' + left.toString('base64'), rightData: 'data:image/png;base64,' + right.toString('base64'),
+    displayLeftData: leftX === 0 && leftY === 0 && lm.width === width && lm.height === height ? originalLeftData : null,
+    displayRightData: rightUntransformed && rightX === 0 && rightY === 0 && rm.width === width && rm.height === height ? originalRightData : null,
+    splitLeftData: originalLeftData || 'data:image/png;base64,' + sourceLeft.toString('base64'),
+    splitRightData: rightUntransformed && originalRightData ? originalRightData : 'data:image/png;base64,' + rightImage.toString('base64'),
+    splitLeftWidth: lm.width, splitLeftHeight: lm.height, splitRightWidth: rm.width, splitRightHeight: rm.height,
     diffData: 'data:image/png;base64,' + diffPng.toString('base64'),
     subtractData: 'data:image/png;base64,' + subtractPng.toString('base64'),
     width, height, changed, count: regions.length,
