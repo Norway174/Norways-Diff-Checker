@@ -43,3 +43,15 @@ Settings can also add **Compare this file** and **Compare this folder** to Windo
 
 The app creates `%LOCALAPPDATA%\NorwaysDiffChecker` on launch and uses it directly for `preferences.json`, `projects`, Electron user data, and `cache`.
 
+## Download
+
+There is no packaged download or installer yet. To use the app, install [Node.js](https://nodejs.org/) with npm, then clone this repository and run it from source:
+
+```powershell
+git clone <repository-url>
+cd "Norways Diff Checker"
+npm install
+npm run start
+```
+
+Replace `<repository-url>` with this repository's Git URL. The app opens in its own Electron window and continues running while the terminal process is active.
