@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const crypto = require('node:crypto');
 const { Worker } = require('node:worker_threads');
 const XLSX = require('xlsx');
 const sharp = require('sharp');
@@ -12,10 +13,14 @@ const JSZip = require('jszip');
 const { docxFromChunks, pdfFromComparison, imageViewFromComparison, textFromComparison } = require('../electron/exporters');
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'norways-diff-test-'));
+const assetRoot = path.join(root, 'comparison-assets');
 const workerPath = path.join(__dirname, '../electron/compare-worker.js');
 function run(type, left, right, options = {}) {
   return new Promise((resolve, reject) => {
-    const worker = new Worker(workerPath, { workerData: { type, left, right, options } });
+    const assetId = crypto.randomUUID();
+    const assetDir = path.join(assetRoot, assetId);
+    fs.mkdirSync(assetDir, { recursive: true });
+    const worker = new Worker(workerPath, { workerData: { type, left, right, options, assetId, assetDir } });
     let result;
     worker.on('message', message => {
       if (message.kind === 'result') result = message.result;
@@ -32,6 +37,11 @@ async function solidPng(width, height, rgba) {
 }
 async function rawPng(buffer) {
   return sharp(buffer).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+}
+function assetBuffer(value) {
+  const url = new URL(value);
+  assert.equal(url.protocol, 'ndc-asset:');
+  return fs.readFileSync(path.join(assetRoot, url.hostname, path.basename(url.pathname)));
 }
 test.after(async () => {
   const resolved = path.resolve(root);
@@ -182,12 +192,12 @@ test('image compare detects changed pixels', async () => {
   const result = await run('images', { path: a }, { path: b }, { threshold: 20 });
   assert.equal(result.changed, 64);
   assert.equal(result.regions.length, 1);
-  assert.match(result.splitLeftData, /^data:image\/png;base64,/);
-  assert.match(result.splitRightData, /^data:image\/png;base64,/);
+  assert.match(result.splitLeftData, /^ndc-asset:\/\//);
+  assert.match(result.splitRightData, /^ndc-asset:\/\//);
   assert.deepEqual([result.splitLeftWidth, result.splitLeftHeight, result.splitRightWidth, result.splitRightHeight], [8, 8, 8, 8]);
-  assert.equal(result.displayLeftData, 'data:image/png;base64,' + fs.readFileSync(a).toString('base64'));
-  assert.equal(result.displayRightData, 'data:image/png;base64,' + fs.readFileSync(b).toString('base64'));
-  const generatedMetadata = await sharp(Buffer.from(result.leftData.split(',')[1], 'base64')).metadata();
+  assert.deepEqual(assetBuffer(result.displayLeftData), fs.readFileSync(a));
+  assert.deepEqual(assetBuffer(result.displayRightData), fs.readFileSync(b));
+  const generatedMetadata = await sharp(assetBuffer(result.leftData)).metadata();
   assert.ok(generatedMetadata.icc?.length, 'generated comparison canvases should include an ICC profile');
 });
 test('image compare reports separate changed regions', async () => {
@@ -254,7 +264,8 @@ test('DOCX detects formatting and moved paragraphs', async () => {
   assert.ok(result.structuralChanges.some(change => change.kind === 'formatting'));
   assert.ok(result.structuralChanges.some(change => change.kind === 'moved'));
 });
-test('bundled LibreOffice renders DOCX pages without a system install', async () => {
+const bundledLibreOffice = path.join(__dirname, '../vendor/libreoffice-msi/program/soffice.exe');
+test('bundled LibreOffice renders DOCX pages without a system install', { skip: !fs.existsSync(bundledLibreOffice) }, async () => {
   const a = path.join(root, 'render-a.docx'), b = path.join(root, 'render-b.docx');
   fs.writeFileSync(a, await Packer.toBuffer(new Document({ sections: [{ children: [new Paragraph('Page one')] }] })));
   fs.writeFileSync(b, await Packer.toBuffer(new Document({ sections: [{ children: [new Paragraph('Page two')] }] })));

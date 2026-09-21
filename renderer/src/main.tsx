@@ -10,7 +10,6 @@ import xml from 'highlight.js/lib/languages/xml';
 import css from 'highlight.js/lib/languages/css';
 import bash from 'highlight.js/lib/languages/bash';
 import sql from 'highlight.js/lib/languages/sql';
-import 'material-symbols/outlined.css';
 import type { CompareEvent, CompareTab, Input, Mode, Options, Preferences } from './types';
 import './styles.css';
 declare const __APP_COMMIT__: string;
@@ -45,6 +44,33 @@ const defaults = (): Options => ({
 const newTab = (type: Mode, left: Input | null = null, right: Input | null = null, available: Input[] = [], imageView: ImageViewMode = 'split'): CompareTab => ({
   id: crypto.randomUUID(), title: modes.find(mode => mode.id === type)?.label || type, type,
   left, right, available, options: { ...defaults(), ...(type === 'images' ? { view: imageView, ...(imageView === 'slider' ? { opacity: percentageToReveal(50) } : {}) } : {}) }, result: null, busy: false, progress: 0, phase: ''
+});
+const persistentInput = (input: Input | null) => input?.path ? { ...input, text: undefined } : null;
+const persistentOptions = (options: Options): Options => ({ ...options, password: undefined });
+const persistentTab = (tab: CompareTab): CompareTab => ({
+  ...tab,
+  left: persistentInput(tab.left),
+  right: persistentInput(tab.right),
+  available: tab.available.filter(input => input.path).map(input => ({ ...input, text: undefined })),
+  options: persistentOptions(tab.options),
+  scans: tab.scans?.map(scan => ({ ...scan, options: persistentOptions({ ...defaults(), ...scan.options }) })),
+  result: null,
+  busy: false,
+  progress: 0,
+  phase: '',
+  jobId: undefined,
+  needsCompare: undefined
+});
+const transferableTab = (tab: CompareTab): CompareTab => ({
+  ...tab,
+  options: persistentOptions(tab.options),
+  scans: tab.scans?.map(scan => ({ ...scan, options: persistentOptions({ ...defaults(), ...scan.options }) })),
+  result: null,
+  busy: false,
+  progress: 0,
+  phase: '',
+  jobId: undefined,
+  needsCompare: Boolean(tab.left && tab.right)
 });
 function decidedChunks(chunks: any[], decisions: CompareTab['decisions']) {
   if (!decisions) return chunks;
@@ -284,7 +310,7 @@ function Titlebar({ tabs, active, onSelect, onNew, onClose, onReorder, onReceive
         }}
         onDragStart={event => {
           localDragId.current = tab.id;
-          dragToken.current = window.api.beginTabDrag(tab, tabs.length);
+          dragToken.current = window.api.beginTabDrag(crypto.randomUUID(), transferableTab(tab), tabs.length);
           event.dataTransfer.setData(tabDragType, tab.id);
           event.dataTransfer.setData(tabTokenType, dragToken.current);
           event.dataTransfer.effectAllowed = 'linkMove';
@@ -1099,10 +1125,11 @@ function App() {
         commitTabs([bootstrap.initialTab]); setActiveId(bootstrap.initialTab.id); setWelcome(false);
         if (bootstrap.initialTab.left && bootstrap.initialTab.right && !bootstrap.initialTab.result) void run(bootstrap.initialTab);
       } else if (bootstrap.primary && value.restoreTabs && value.tabs?.length) {
-        const restored = value.tabs.map(tab => ({ ...tab, result: null, busy: false, progress: 0, options: { ...defaults(), ...tab.options, ...(tab.type === 'images' ? { view: imageViewOrDefault(tab.options?.view || value.lastImageView) } : {}) } }));
+        const restored = value.tabs.map(tab => ({ ...tab, result: null, busy: false, progress: 0, needsCompare: Boolean(tab.left && tab.right), options: { ...defaults(), ...tab.options, password: undefined, ...(tab.type === 'images' ? { view: imageViewOrDefault(tab.options?.view || value.lastImageView) } : {}) } }));
         const restoredActiveId = restored.some(tab => tab.id === value.activeTabId) ? value.activeTabId! : restored[0].id;
         commitTabs(restored); setActiveId(restoredActiveId);
-        restored.filter(tab => tab.left && tab.right).forEach(tab => void run(tab));
+        const restoredActive = restored.find(tab => tab.id === restoredActiveId);
+        if (restoredActive?.left && restoredActive.right) void run(restoredActive);
       }
       const requests = bootstrap.primary ? await window.api.takeStartupOpenRequests() : [];
       if (requests.length) {
@@ -1137,15 +1164,17 @@ function App() {
   }, []);
   useEffect(() => {
     const timer = setTimeout(() => {
-      if (primaryWindow.current && (tabs.length || prefs.restoreTabs)) window.api.setSettings({ tabs: tabs.map(tab => ({ ...tab, result: null, busy: false, jobId: undefined })), activeTabId: activeId || undefined });
+      if (primaryWindow.current && (tabs.length || prefs.restoreTabs)) void window.api.setSettings({ tabs: tabs.map(persistentTab), activeTabId: activeId || undefined })
+        .catch(error => showNotice('Unable to save the workspace: ' + humanError(error)));
     }, 600);
     return () => clearTimeout(timer);
   }, [tabs, activeId, prefs.restoreTabs]);
   async function run(tab: CompareTab) {
     if (!tab.left || !tab.right) return;
     if (tab.jobId) await window.api.cancelCompare(tab.jobId);
+    if (tab.result?.assetId) await window.api.releaseCompareAssets(tab.result.assetId);
     const jobId = crypto.randomUUID();
-    patchTab(tab.id, { busy: true, progress: 0, phase: 'Preparing', error: undefined, result: null, decisions: undefined, jobId });
+    patchTab(tab.id, { busy: true, progress: 0, phase: 'Preparing', error: undefined, result: null, decisions: undefined, jobId, needsCompare: false });
     try {
       await window.api.startCompare({ id: jobId, type: tab.type, left: tab.left, right: tab.right, options: tab.options });
     } catch (error) {
@@ -1163,6 +1192,7 @@ function App() {
   }
   function setInput(tab: CompareTab, side: 'left' | 'right', input: Input) {
     if (!input.types.includes(tab.type)) { invalidDrop('Unable to compare ' + input.name + ' as ' + tab.type + '.'); return; }
+    if (tab.result?.assetId) void window.api.releaseCompareAssets(tab.result.assetId);
     const old = tab[side];
     const next = { ...tab, [side]: input, available: [...tab.available.filter(item => item.id !== input.id), ...(old && old.id !== input.id ? [old] : [])], result: null, decisions: undefined };
     patchTab(tab.id, next);
@@ -1171,6 +1201,7 @@ function App() {
   function changeOptions(tab: CompareTab, patch: Partial<Options>) {
     const current = tabsRef.current.find(item => item.id === tab.id) || tab;
     const recompute = Object.keys(patch).some(key => !['view','opacity','sliderNoOverlap','flickerMs','transitionMs','wrap','syncScroll','syncLineHeights','hideUnchanged','hideRows','hideColumns','syntaxHighlight'].includes(key)) || (current.type === 'documents' && patch.view === 'image');
+    if (recompute && current.result?.assetId) void window.api.releaseCompareAssets(current.result.assetId);
     const next = { ...current, options: { ...current.options, ...patch }, ...(recompute ? { result: null, decisions: undefined } : {}) };
     patchTab(tab.id, next);
     if (tab.type === 'images' && patch.view !== undefined) {
@@ -1219,6 +1250,7 @@ function App() {
   function closeTab(id: string) {
     const tab = tabsRef.current.find(item => item.id === id);
     if (tab?.jobId) void window.api.cancelCompare(tab.jobId);
+    if (tab?.result?.assetId) void window.api.releaseCompareAssets(tab.result.assetId);
     const pending = compareTimers.current.get(id);
     if (pending) clearTimeout(pending);
     compareTimers.current.delete(id);
@@ -1232,6 +1264,7 @@ function App() {
   function removeTransferredTab(id: string) {
     const tab = tabsRef.current.find(item => item.id === id);
     if (tab?.jobId) void window.api.cancelCompare(tab.jobId);
+    if (tab?.result?.assetId) void window.api.releaseCompareAssets(tab.result.assetId);
     const pending = compareTimers.current.get(id);
     if (pending) clearTimeout(pending);
     compareTimers.current.delete(id);
@@ -1245,6 +1278,11 @@ function App() {
     next.splice(target < 0 ? next.length : target + (after ? 1 : 0), 0, tab);
     commitTabs(next); setActiveId(tab.id); setWelcome(false);
     if (tab.left && tab.right && !tab.result) void run(tab);
+  }
+  function activateTab(id: string) {
+    setActiveId(id);
+    const tab = tabsRef.current.find(item => item.id === id);
+    if (tab?.needsCompare && tab.left && tab.right && !tab.busy && !tab.result) void run(tab);
   }
   async function openRecent(item: Preferences['recentCompares'][number]) {
     try {
@@ -1295,9 +1333,7 @@ function App() {
       else if (format === 'xlsx') {
         const address = (row: number | null, col: number | null) => row && col != null ? XLSX.utils.encode_cell({ r: row - 1, c: col }) : '';
         const rows = tab.result.changed.map((item: any) => ({ OriginalCell: address(item.leftRow, item.leftColumn), ChangedCell: address(item.rightRow, item.rightColumn), Original: item.left, Changed: item.right, OriginalFormula: item.leftFormula, ChangedFormula: item.rightFormula }));
-        const book = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(book, XLSX.utils.json_to_sheet(rows), 'Changes');
-        const buffer = XLSX.write(book, { type: 'base64', bookType: 'xlsx' });
-        await window.api.saveExport({ name: tab.title + '.xlsx', content: buffer, base64: true, filters: [{ name: 'Excel workbook', extensions: ['xlsx'] }] });
+        await window.api.exportXlsx({ title: tab.title, rows });
       } else {
         const lines = tab.type === 'folders' ? tab.result.entries.map((entry: any) => entry.status + ' ' + entry.relative)
           : tab.type === 'excel' ? tab.result.changed.map((item: any) => `${tab.result.leftName} ${item.leftRow && item.leftColumn != null ? XLSX.utils.encode_cell({ r: item.leftRow - 1, c: item.leftColumn }) : '—'} / ${tab.result.rightName} ${item.rightRow && item.rightColumn != null ? XLSX.utils.encode_cell({ r: item.rightRow - 1, c: item.rightColumn }) : '—'}: ${item.left} → ${item.right}${item.leftFormula || item.rightFormula ? ` [${item.leftFormula} → ${item.rightFormula}]` : ''}`)
@@ -1328,7 +1364,7 @@ function App() {
     if (event.dataTransfer.types.includes(tabTokenType)) { event.preventDefault(); document.body.classList.remove('detaching-tab'); return; }
     if (event.dataTransfer.types.includes('Files')) void fromDrop(event);
   }}>
-    <Titlebar tabs={tabs} active={activeId} onSelect={setActiveId} onNew={() => setWelcome(true)} onClose={closeTab}
+    <Titlebar tabs={tabs} active={activeId} onSelect={activateTab} onNew={() => setWelcome(true)} onClose={closeTab}
       onReorder={(from, to, after) => { const next = [...tabsRef.current]; const fromIndex = next.findIndex(tab => tab.id === from), toIndex = next.findIndex(tab => tab.id === to); if (fromIndex < 0 || toIndex < 0 || fromIndex === toIndex) return; const moved = next.splice(fromIndex, 1)[0]; const adjustedTarget = next.findIndex(tab => tab.id === to); next.splice(adjustedTarget + (after ? 1 : 0), 0, moved); commitTabs(next); }}
       onReceive={receiveTab}
       onSettings={() => setSettingsOpen(true)} onAppClose={appClose} />
@@ -1346,7 +1382,7 @@ function App() {
             <option value="pdf">PDF report</option>
           </select></div></div>
       <div className="input-row"><InputSlot side="left" input={active.left} available={active.available} type={active.type} onBrowse={() => void browse(active, 'left')} onReplace={input => setInput(active, 'left', input)} onDrop={event => void fromDrop(event)} />
-            <button className="swap" title="Swap sides" aria-label="Swap sides" onClick={() => { const next = { ...active, left: active.right, right: active.left, result: null, decisions: undefined }; patchTab(active.id, next); void run(next); }}><MaterialIcon name="swap_horiz" /></button>
+            <button className="swap" title="Swap sides" aria-label="Swap sides" onClick={() => { if (active.result?.assetId) void window.api.releaseCompareAssets(active.result.assetId); const next = { ...active, left: active.right, right: active.left, result: null, decisions: undefined }; patchTab(active.id, next); void run(next); }}><MaterialIcon name="swap_horiz" /></button>
         <InputSlot side="right" input={active.right} available={active.available} type={active.type} onBrowse={() => void browse(active, 'right')} onReplace={input => setInput(active, 'right', input)} onDrop={event => void fromDrop(event)} /></div>
       {active.error && <div className="error-banner">{active.error}</div>}
       {active.busy && <div className="progress"><div style={{ width: active.progress + '%' }} /></div>}

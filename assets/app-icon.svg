@@ -1,5 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
-  <rect width="256" height="256" rx="40" fill="#007acc"/>
-  <path d="M48 68h42l76 110V68h42v120h-42L90 78v110H48z" fill="#fff"/>
-  <path d="M99 194h58" stroke="#abd9f5" stroke-width="8" stroke-linecap="round"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2134 2134">
+  <defs><linearGradient id="bg" x1="230" y1="130" x2="1900" y2="2050" gradientUnits="userSpaceOnUse"><stop stop-color="#303840"/><stop offset=".5" stop-color="#1d2329"/><stop offset="1" stop-color="#111519"/></linearGradient><linearGradient id="rim" x1="210" y1="110" x2="1910" y2="2050" gradientUnits="userSpaceOnUse"><stop stop-color="#62ceff"/><stop offset=".55" stop-color="#007acc"/><stop offset="1" stop-color="#005a9e"/></linearGradient></defs>
+  <path d="M1066.667 40.36 1995.451 569.767v1035.594l-928.784 487.612-928.784-487.612V569.767z" fill="url(#bg)" stroke="url(#rim)" stroke-width="65"/>
+  <g fill="none" stroke="#76cfff" stroke-width="32" opacity=".15"><path d="M1066.667 1089.886v1003.087"/><path d="m137.883 569.767 928.784 520.119 928.784-520.119"/></g>
+  <g fill="none" stroke-linejoin="round" stroke-width="95"><path d="M430 665h515l150 150v715H430z" stroke="#ff6174"/><path d="M1039 665h515l150 150v715h-665z" stroke="#58e39b"/></g><g stroke="#f5fbff" stroke-linecap="round" stroke-width="75"><path d="M590 990h300M590 1190h270M1195 990h350M1195 1190h260"/></g>
 </svg>

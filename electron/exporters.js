@@ -3,6 +3,8 @@ const JSZip = require('jszip');
 const PDFDocument = require('pdfkit');
 const sharp = require('sharp');
 const Diff = require('diff');
+const fsp = require('node:fs/promises');
+const path = require('node:path');
 
 function textFromComparison({ leftText = '', rightText = '', leftName = 'Original', rightName = 'Changed', kind = 'changed', fenced = false }) {
   let text;
@@ -14,25 +16,29 @@ function textFromComparison({ leftText = '', rightText = '', leftName = 'Origina
   return `\`\`\`diff\n${text}${text.endsWith('\n') ? '' : '\n'}\`\`\``;
 }
 
-function imageBuffer(dataUrl) {
-  const match = /^data:image\/png;base64,(.+)$/s.exec(String(dataUrl || ''));
-  if (!match) throw new Error('The image comparison is missing rendered PNG data.');
-  return Buffer.from(match[1], 'base64');
+async function imageBuffer(dataUrl, assetRoot) {
+  const value = String(dataUrl || '');
+  const match = /^data:image\/png;base64,(.+)$/s.exec(value);
+  if (match) return Buffer.from(match[1], 'base64');
+  const url = new URL(value);
+  if (url.protocol !== 'ndc-asset:' || !assetRoot || !/^[0-9a-f-]{36}$/i.test(url.hostname)) throw new Error('The image comparison is missing rendered PNG data.');
+  const name = path.basename(decodeURIComponent(url.pathname));
+  if (!/^[a-z0-9-]+\.png$/i.test(name)) throw new Error('The image comparison asset is invalid.');
+  return fsp.readFile(path.join(assetRoot, url.hostname, name));
 }
 
-async function rawImage(dataUrl) {
-  return sharp(imageBuffer(dataUrl)).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+async function rawImage(dataUrl, assetRoot) {
+  return sharp(await imageBuffer(dataUrl, assetRoot)).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
 }
 
 async function pngFromRaw(data, info) {
   return sharp(data, { raw: { width: info.width, height: info.height, channels: 4 } }).png().toBuffer();
 }
 
-async function imageViewFromComparison({ result, options, flickerRight = false }) {
+async function imageViewFromComparison({ result, options, flickerRight = false, assetRoot }) {
   const view = options.view || 'split';
   if (view === 'split') {
-    const left = imageBuffer(result.splitLeftData || result.leftData);
-    const right = imageBuffer(result.splitRightData || result.rightData);
+    const [left, right] = await Promise.all([imageBuffer(result.splitLeftData || result.leftData, assetRoot), imageBuffer(result.splitRightData || result.rightData, assetRoot)]);
     const [leftInfo, rightInfo] = await Promise.all([sharp(left).metadata(), sharp(right).metadata()]);
     const horizontal = options.splitOrientation === 'horizontal';
     const width = horizontal ? Math.max(leftInfo.width, rightInfo.width) : leftInfo.width + rightInfo.width;
@@ -42,11 +48,11 @@ async function imageViewFromComparison({ result, options, flickerRight = false }
       { input: right, left: horizontal ? Math.floor((width - rightInfo.width) / 2) : leftInfo.width, top: horizontal ? leftInfo.height : Math.floor((height - rightInfo.height) / 2) }
     ]).png().toBuffer();
   }
-  if (view === 'subtract') return imageBuffer(result.subtractData);
-  if (view === 'flicker') return imageBuffer(flickerRight ? result.rightData : result.leftData);
+  if (view === 'subtract') return imageBuffer(result.subtractData, assetRoot);
+  if (view === 'flicker') return imageBuffer(flickerRight ? result.rightData : result.leftData, assetRoot);
   if (!['slider', 'fade', 'highlight'].includes(view)) throw new Error('Image View export is only available for visual image views.');
 
-  const [left, right] = await Promise.all([rawImage(result.leftData), rawImage(view === 'highlight' ? result.diffData : result.rightData)]);
+  const [left, right] = await Promise.all([rawImage(result.leftData, assetRoot), rawImage(view === 'highlight' ? result.diffData : result.rightData, assetRoot)]);
   if (left.info.width !== right.info.width || left.info.height !== right.info.height) throw new Error('The rendered image layers have different dimensions.');
   const output = Buffer.from(left.data);
   if (view === 'slider') {

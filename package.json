@@ -10,7 +10,7 @@
     "start": "npm run build:ui && electron .",
     "dev": "vite --host 127.0.0.1",
     "build:ui": "vite build",
-    "check": "tsc --noEmit && node --check electron/main.js && node --check electron/preload.js && node --check electron/external-open.js && node --check electron/shell-integration.js && node --check electron/compare-worker.js && node --check electron/exporters.js",
+    "check": "tsc --noEmit && node --check electron/main.js && node --check electron/preload.js && node --check electron/external-open.js && node --check electron/shell-integration.js && node --check electron/compare-worker.js && node --check electron/exporters.js && node --check electron/export-worker.js && node --check electron/limits.js",
     "test": "node --test tests/*.test.js",
     "build:dir": "npm run build:ui && powershell -NoProfile -ExecutionPolicy Bypass -File scripts/ensure-libreoffice.ps1 && electron-builder --win dir"
   },
@@ -23,6 +23,9 @@
     "@vitejs/plugin-react": "^6.1.1",
     "electron": "^44.2.0",
     "electron-builder": "^26.15.3",
+    "highlight.js": "^11.12.0",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
     "typescript": "^7.0.2",
     "vite": "^8.3.0"
   },
@@ -34,14 +37,10 @@
     "exifr": "^7.1.3",
     "fast-xml-parser": "^5.11.1",
     "heic-convert": "2.1.0",
-    "highlight.js": "11.12.0",
     "jszip": "^3.10.2",
     "mammoth": "^1.12.3",
-    "material-symbols": "^0.47.4",
     "pdfjs-dist": "^6.3.289",
     "pdfkit": "^0.20.2",
-    "react": "^19.3.0",
-    "react-dom": "^19.3.0",
     "sharp": "^0.35.4",
     "tesseract.js": "^7.0.0",
     "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
@@ -68,7 +67,12 @@
         "to": "libreoffice",
         "filter": [
           "**/*",
-          "!*.msi"
+          "!*.msi",
+          "!help/**/*",
+          "!readmes/**/*",
+          "!share/autotext/**/*",
+          "!share/gallery/**/*",
+          "!share/template/**/*"
         ]
       }
     ],

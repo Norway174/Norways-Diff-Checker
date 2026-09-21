@@ -11,7 +11,10 @@ contextBridge.exposeInMainWorld('api', {
   closeWindow: call('window:close'),
   takeWindowBootstrap: call('window:bootstrap'),
   reportActiveTab(activeTab) { ipcRenderer.send('window:active-tab', activeTab); },
-  beginTabDrag(tab, tabCount) { return ipcRenderer.sendSync('tabs:begin-drag', tab, tabCount); },
+  beginTabDrag(token, tab, tabCount) {
+    ipcRenderer.send('tabs:begin-drag', token, tab, tabCount);
+    return token;
+  },
   endTabDrag: call('tabs:end-drag'),
   acceptTabDrag: call('tabs:accept-drag'),
   detachTab: call('tabs:detach'),
@@ -48,6 +51,7 @@ contextBridge.exposeInMainWorld('api', {
   preview: call('inputs:preview'),
   startCompare: call('compare:start'),
   cancelCompare: call('compare:cancel'),
+  releaseCompareAssets: call('compare:release-assets'),
   onCompareEvent(callback) {
     const listener = (_event, message) => callback(message);
     ipcRenderer.on('compare:event', listener);
@@ -62,9 +66,9 @@ contextBridge.exposeInMainWorld('api', {
   openExternalUrl: call('external:open-url'),
   checkForUpdates: call('app:check-for-updates'),
   writeClipboardText: call('clipboard:write-text'),
-  saveExport: call('export:save'),
   exportImageView: call('export:image-view'),
   exportText: call('export:text'),
   exportPdf: call('export:pdf'),
-  exportDocx: call('export:docx')
+  exportDocx: call('export:docx'),
+  exportXlsx: call('export:xlsx')
 });

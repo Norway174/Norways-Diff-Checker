@@ -13,14 +13,44 @@ const mammoth = require('mammoth');
 const JSZip = require('jszip');
 const { XMLParser } = require('fast-xml-parser');
 const exifr = require('exifr');
+const limits = require('./limits');
 
 const report = (value, phase) => parentPort.postMessage({ kind: 'progress', value, phase });
 const request = workerData;
 const activeChildren = new Set();
 let cancelled = false;
 const srgbPng = image => image.withIccProfile('srgb').png().toBuffer();
+async function imageAsset(name, bytes) {
+  if (!request.assetId || !request.assetDir) throw new Error('Image asset storage is unavailable.');
+  await fsp.writeFile(path.join(request.assetDir, name), bytes);
+  return `ndc-asset://${request.assetId}/${name}`;
+}
 parentPort.on('message', message => { if (message?.kind === 'cancel') { cancelled = true; for (const child of activeChildren) child.kill(); } });
 function throwIfCancelled() { if (cancelled) throw new Error('Comparison cancelled.'); }
+async function boundedFile(input, maximum, label) {
+  const stat = await fsp.stat(input.path);
+  if (!stat.isFile()) throw new Error(`${label} must be a file.`);
+  if (stat.size > maximum) throw new Error(`${label} is too large for one comparison.`);
+  return stat;
+}
+async function loadArchive(input) {
+  await boundedFile(input, limits.maxInputFileBytes, 'Archive');
+  const zip = await JSZip.loadAsync(await fsp.readFile(input.path));
+  const entries = Object.values(zip.files);
+  if (entries.length > limits.maxArchiveEntries) throw new Error(`Archive contains more than ${limits.maxArchiveEntries.toLocaleString()} entries.`);
+  let expanded = 0;
+  for (const entry of entries) {
+    const size = Number(entry?._data?.uncompressedSize) || 0;
+    if (size > limits.maxArchiveEntryBytes) throw new Error('Archive contains an entry that is too large.');
+    expanded += size;
+    if (expanded > limits.maxArchiveExpandedBytes) throw new Error('Archive expands beyond the supported size.');
+  }
+  return zip;
+}
+function pdfOptions(bytes) {
+  const pdfRoot = path.dirname(require.resolve('pdfjs-dist/package.json'));
+  return { data: new Uint8Array(bytes), password: request.options.password || undefined, useSystemFonts: true, standardFontDataUrl: pathToFileURL(path.join(pdfRoot, 'standard_fonts') + path.sep).href };
+}
 async function officePdf(input) {
   throwIfCancelled();
   if (path.extname(input.path).toLowerCase() === '.pdf') return { file: input.path, clean: async () => {} };
@@ -94,7 +124,13 @@ function textDiff(leftText, rightText, options = {}) {
   return { leftText, rightText, chunks: addCharacterChanges(chunks), count: chunks.filter(x => x.type !== 'same').length };
 }
 async function loadText(input) {
-  return input.text !== undefined ? String(input.text) : fsp.readFile(input.path, 'utf8');
+  if (input.text !== undefined) {
+    const text = String(input.text);
+    if (Buffer.byteLength(text) > limits.maxInlineTextBytes) throw new Error('Pasted text is limited to 64 MB.');
+    return text;
+  }
+  await boundedFile(input, limits.maxTextFileBytes, 'Text or binary input');
+  return fsp.readFile(input.path, 'utf8');
 }
 async function compareText() {
   report(15, 'Reading text');
@@ -105,6 +141,9 @@ async function compareText() {
 function sheetRows(sheet) {
   const ref = sheet['!ref'] || 'A1';
   const bounds = XLSX.utils.decode_range(ref);
+  const rowCount = bounds.e.r - bounds.s.r + 1;
+  const columnCount = bounds.e.c - bounds.s.c + 1;
+  if (rowCount > limits.maxSpreadsheetRows || columnCount > limits.maxSpreadsheetColumns || rowCount * columnCount > limits.maxSpreadsheetCells) throw new Error('Selected sheet is larger than the supported 2,000,000-cell comparison limit.');
   const rows = [];
   for (let row = bounds.s.r; row <= bounds.e.r; row++) {
     const values = [];
@@ -130,7 +169,10 @@ function cellValue(cell, options) {
 }
 async function compareExcel() {
   report(10, 'Reading spreadsheets');
-  const [left, right] = await Promise.all([request.left, request.right].map(async input => XLSX.read(await fsp.readFile(input.path), { type: 'buffer', cellFormula: true, cellDates: true })));
+  const [left, right] = await Promise.all([request.left, request.right].map(async input => {
+    await boundedFile(input, limits.maxInputFileBytes, 'Spreadsheet');
+    return XLSX.read(await fsp.readFile(input.path), { type: 'buffer', cellFormula: true, cellDates: true });
+  }));
   const leftName = request.options.leftSheet || left.SheetNames[0];
   const rightName = request.options.rightSheet || right.SheetNames[0];
   let leftRows = sheetRows(left.Sheets[leftName] || left.Sheets[left.SheetNames[0]]);
@@ -227,7 +269,7 @@ async function hash(file) {
   return new Promise((resolve, reject) => {
     const h = crypto.createHash('sha256');
     const stream = fs.createReadStream(file);
-    stream.on('data', chunk => h.update(chunk));
+    stream.on('data', chunk => { if (cancelled) stream.destroy(new Error('Comparison cancelled.')); else h.update(chunk); });
     stream.on('end', () => resolve(h.digest('hex')));
     stream.on('error', reject);
   });
@@ -243,7 +285,9 @@ function excluded(relative, patterns) {
     return expression.test(normalized);
   });
 }
-async function scanFolder(root, ignored, result = new Map(), relative = '') {
+async function scanFolder(root, ignored, result = new Map(), relative = '', depth = 0) {
+  throwIfCancelled();
+  if (depth > limits.maxFolderDepth) throw new Error(`Folder nesting exceeds ${limits.maxFolderDepth} levels.`);
   for (const entry of await fsp.readdir(path.join(root, relative), { withFileTypes: true })) {
     const rel = path.join(relative, entry.name);
     if (excluded(rel, ignored)) continue;
@@ -251,10 +295,12 @@ async function scanFolder(root, ignored, result = new Map(), relative = '') {
     if (entry.isSymbolicLink()) continue;
     if (entry.isDirectory()) {
       result.set(rel, { relative: rel, directory: true });
-      await scanFolder(root, ignored, result, rel);
+      if (result.size > limits.maxFolderEntries) throw new Error(`Folder comparison is limited to ${limits.maxFolderEntries.toLocaleString()} entries.`);
+      await scanFolder(root, ignored, result, rel, depth + 1);
     } else if (entry.isFile()) {
       const stat = await fsp.stat(full);
       result.set(rel, { relative: rel, directory: false, size: stat.size, modified: stat.mtimeMs, path: full });
+      if (result.size > limits.maxFolderEntries) throw new Error(`Folder comparison is limited to ${limits.maxFolderEntries.toLocaleString()} entries.`);
     }
   }
   return result;
@@ -268,23 +314,26 @@ async function compareFolders() {
   report(40, 'Scanning right folder');
   const right = await scanFolder(request.right.path, ignored);
   const names = [...new Set([...left.keys(), ...right.keys()])].sort();
-  const entries = [];
-  for (let i = 0; i < names.length; i++) {
-    const name = names[i], a = left.get(name), b = right.get(name);
-    let status = a && b ? 'same' : a ? 'removed' : 'added';
-    let metadataChanged = false;
-    if (a && b) {
-      if (a.directory !== b.directory) status = 'modified';
-      else if (!a.directory) {
+  const entries = names.map(name => {
+    const a = left.get(name), b = right.get(name);
+    const metadataChanged = !!(a && b && !a.directory && !b.directory && (a.size !== b.size || Math.abs(a.modified - b.modified) > 2000));
+    const status = !a || !b ? a ? 'removed' : 'added' : a.directory !== b.directory || (!a.directory && a.size !== b.size) ? 'modified' : 'same';
+    return { relative: name, left: a, right: b, status, metadataChanged, directory: !!(a?.directory || b?.directory) };
+  });
+  let nextIndex = 0;
+  const compareNext = async () => {
+    while (nextIndex < entries.length) {
+      const index = nextIndex++;
+      const entry = entries[index], a = entry.left, b = entry.right;
+      if (a && b && !a.directory && !b.directory && a.size === b.size) {
         const [leftHash, rightHash] = await Promise.all([hash(a.path), hash(b.path)]);
         a.hash = leftHash; b.hash = rightHash;
-        metadataChanged = a.size !== b.size || Math.abs(a.modified - b.modified) > 2000;
-        if (leftHash !== rightHash || (request.options.compareMetadata && metadataChanged)) status = 'modified';
-      }
+        if (leftHash !== rightHash || (request.options.compareMetadata && entry.metadataChanged)) entry.status = 'modified';
+      } else if (a && b && request.options.compareMetadata && entry.metadataChanged) entry.status = 'modified';
+      if (index % 30 === 0) report(40 + Math.floor(55 * index / Math.max(entries.length, 1)), 'Comparing folders');
     }
-    entries.push({ relative: name, left: a, right: b, status, metadataChanged, directory: !!(a?.directory || b?.directory) });
-    if (i % 30 === 0) report(40 + Math.floor(55 * i / Math.max(names.length, 1)), 'Comparing folders');
-  }
+  };
+  await Promise.all(Array.from({ length: Math.min(limits.folderHashConcurrency, entries.length) }, compareNext));
   return { entries, count: entries.filter(item => item.status !== 'same').length };
 }
 async function ocrDetailed(buffer, positioned = false) {
@@ -302,8 +351,10 @@ async function ocr(buffer) { return (await ocrDetailed(buffer)).text; }
 async function renderPdfPage(input, requestedPage = request.options.page) {
   const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
   const { createCanvas } = require('@napi-rs/canvas');
-  const loading = pdfjs.getDocument({ data: new Uint8Array(await fsp.readFile(input.path)), password: request.options.password || undefined, useSystemFonts: true });
+  await boundedFile(input, limits.maxInputFileBytes, 'PDF');
+  const loading = pdfjs.getDocument(pdfOptions(await fsp.readFile(input.path)));
   const pdf = await loading.promise;
+  if (pdf.numPages > limits.maxDocumentPages) throw new Error(`PDF has more than ${limits.maxDocumentPages.toLocaleString()} pages.`);
   const pageNumber = Math.max(1, Math.min(Number(requestedPage) || 1, pdf.numPages));
   const page = await pdf.getPage(pageNumber);
   const viewport = page.getViewport({ scale: 1.5 });
@@ -374,14 +425,14 @@ async function perspectiveWarp(bytes, horizontal, vertical) {
 async function compareImages() {
   report(10, 'Decoding images');
   const originalPngData = async input => path.extname(input.path).toLowerCase() === '.png'
-    ? 'data:image/png;base64,' + (await fsp.readFile(input.path)).toString('base64')
+    ? fsp.readFile(input.path)
     : null;
   const image = async input => {
     if (path.extname(input.path).toLowerCase() === '.pdf') return renderPdfPage(input);
     const source = path.extname(input.path).toLowerCase() === '.heic'
       ? Buffer.from(await require('heic-convert')({ buffer: await fsp.readFile(input.path), format: 'PNG' }))
       : input.path;
-    return srgbPng(sharp(source, { page: request.options.page || 0 }).autoOrient().ensureAlpha());
+    return srgbPng(sharp(source, { page: request.options.page || 0, limitInputPixels: limits.maxImagePixels }).autoOrient().ensureAlpha());
   };
   const [sourceLeft, sourceRight, originalLeftData, originalRightData] = await Promise.all([
     image(request.left), image(request.right), originalPngData(request.left), originalPngData(request.right)
@@ -404,11 +455,11 @@ async function compareImages() {
   const leftX = Math.max(0, -offsetX), leftY = Math.max(0, -offsetY);
   const rightX = leftX + offsetX, rightY = leftY + offsetY;
   const width = Math.max(leftX + lm.width, rightX + rm.width), height = Math.max(leftY + lm.height, rightY + rm.height);
+  if (width * height > limits.maxCanvasPixels) throw new Error('Aligned image canvas exceeds the supported 250-megapixel full-resolution limit.');
   const canvas = (bytes, x, y) => srgbPng(sharp({ create: { width, height, channels: 4, background: '#00000000' } }).composite([{ input: bytes, left: x, top: y }]));
   const [left, right] = await Promise.all([canvas(sourceLeft, leftX, leftY), canvas(rightImage, rightX, rightY)]);
   const [a, b] = await Promise.all([sharp(left).ensureAlpha().raw().toBuffer(), sharp(right).ensureAlpha().raw().toBuffer()]);
-  const diff = Buffer.alloc(width * height * 4);
-  const subtract = Buffer.alloc(width * height * 4);
+  const visual = Buffer.alloc(width * height * 4);
   const mask = new Uint8Array(width * height);
   const threshold = request.options.threshold ?? 24;
   let changed = 0, minX = width, minY = height, maxX = 0, maxY = 0;
@@ -416,12 +467,11 @@ async function compareImages() {
     for (let x = 0; x < width; x++) {
       const i = (y * width + x) * 4;
       const delta = Math.max(Math.abs(a[i]-b[i]), Math.abs(a[i+1]-b[i+1]), Math.abs(a[i+2]-b[i+2]), Math.abs(a[i+3]-b[i+3]));
-      subtract[i] = Math.abs(a[i] - b[i]); subtract[i+1] = Math.abs(a[i+1] - b[i+1]); subtract[i+2] = Math.abs(a[i+2] - b[i+2]); subtract[i+3] = 255;
       if (delta > threshold) {
-        diff[i] = 240; diff[i+1] = 75; diff[i+2] = 75; diff[i+3] = 255;
+        visual[i] = 240; visual[i+1] = 75; visual[i+2] = 75; visual[i+3] = 255;
         mask[y * width + x] = 1;
         changed++; minX = Math.min(minX,x); minY = Math.min(minY,y); maxX = Math.max(maxX,x); maxY = Math.max(maxY,y);
-      } else { diff[i+3] = 0; }
+      } else { visual[i+3] = 0; }
     }
   }
   report(80, 'Reading image details');
@@ -429,8 +479,11 @@ async function compareImages() {
     exifr.parse(request.left.path).catch(() => ({})), exifr.parse(request.right.path).catch(() => ({})),
     fsp.stat(request.left.path), fsp.stat(request.right.path)
   ]);
-  const diffPng = await sharp(diff, { raw: { width, height, channels: 4 } }).png().toBuffer();
-  const subtractPng = await sharp(subtract, { raw: { width, height, channels: 4 } }).png().toBuffer();
+  const diffPng = await sharp(visual, { raw: { width, height, channels: 4 } }).png().toBuffer();
+  for (let i = 0; i < visual.length; i += 4) {
+    visual[i] = Math.abs(a[i] - b[i]); visual[i+1] = Math.abs(a[i+1] - b[i+1]); visual[i+2] = Math.abs(a[i+2] - b[i+2]); visual[i+3] = 255;
+  }
+  const subtractPng = await sharp(visual, { raw: { width, height, channels: 4 } }).png().toBuffer();
   const regions = [];
   const minimum = Math.max(1, Number(request.options.minRegionSize) || 1);
   for (let position = 0; position < mask.length; position++) {
@@ -480,15 +533,21 @@ async function compareImages() {
     leftOcr = leftRead.text; rightOcr = rightRead.text;
     leftOcrWords = leftRead.words; rightOcrWords = rightRead.words;
   }
+  const [leftData, rightData, sourceLeftData, rightImageData, diffData, subtractData, originalLeftAsset, originalRightAsset] = await Promise.all([
+    imageAsset('left.png', left), imageAsset('right.png', right), imageAsset('source-left.png', sourceLeft), imageAsset('source-right.png', rightImage),
+    imageAsset('diff.png', diffPng), imageAsset('subtract.png', subtractPng),
+    originalLeftData ? imageAsset('original-left.png', originalLeftData) : null,
+    originalRightData ? imageAsset('original-right.png', originalRightData) : null
+  ]);
   return {
-    leftData: 'data:image/png;base64,' + left.toString('base64'), rightData: 'data:image/png;base64,' + right.toString('base64'),
-    displayLeftData: leftX === 0 && leftY === 0 && lm.width === width && lm.height === height ? originalLeftData : null,
-    displayRightData: rightUntransformed && rightX === 0 && rightY === 0 && rm.width === width && rm.height === height ? originalRightData : null,
-    splitLeftData: originalLeftData || 'data:image/png;base64,' + sourceLeft.toString('base64'),
-    splitRightData: rightUntransformed && originalRightData ? originalRightData : 'data:image/png;base64,' + rightImage.toString('base64'),
+    assetId: request.assetId,
+    leftData, rightData,
+    displayLeftData: leftX === 0 && leftY === 0 && lm.width === width && lm.height === height ? originalLeftAsset : null,
+    displayRightData: rightUntransformed && rightX === 0 && rightY === 0 && rm.width === width && rm.height === height ? originalRightAsset : null,
+    splitLeftData: originalLeftAsset || sourceLeftData,
+    splitRightData: rightUntransformed && originalRightAsset ? originalRightAsset : rightImageData,
     splitLeftWidth: lm.width, splitLeftHeight: lm.height, splitRightWidth: rm.width, splitRightHeight: rm.height,
-    diffData: 'data:image/png;base64,' + diffPng.toString('base64'),
-    subtractData: 'data:image/png;base64,' + subtractPng.toString('base64'),
+    diffData, subtractData,
     width, height, changed, count: regions.length,
     alignment: { offsetX, offsetY, automatic },
     bounds: changed ? { x: minX, y: minY, width: maxX-minX+1, height: maxY-minY+1 } : null,
@@ -504,7 +563,7 @@ function orderedPages(count, selected) {
 }
 async function embeddedImageText(input, prefix) {
   if (!request.options.ocr) return '';
-  const zip = await JSZip.loadAsync(await fsp.readFile(input.path));
+  const zip = await loadArchive(input);
   const names = Object.keys(zip.files).filter(name => name.startsWith(prefix) && /\.(png|jpe?g|webp|gif|tiff?)$/i.test(name)).sort();
   const found = [];
   for (let index = 0; index < names.length; index++) {
@@ -518,14 +577,17 @@ async function embeddedImageText(input, prefix) {
 async function documentText(input, side) {
   const ext = path.extname(input.path).toLowerCase();
   if (ext === '.docx') {
+    await boundedFile(input, limits.maxInputFileBytes, 'Word document');
     const body = (await mammoth.extractRawText({ path: input.path })).value;
     const images = await embeddedImageText(input, 'word/media/');
     return images ? body + '\n\n' + images : body;
   }
   if (ext === '.pdf') {
     const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
-    const loading = pdfjs.getDocument({ data: new Uint8Array(await fsp.readFile(input.path)), password: request.options.password || undefined, useSystemFonts: true });
+    await boundedFile(input, limits.maxInputFileBytes, 'PDF');
+    const loading = pdfjs.getDocument(pdfOptions(await fsp.readFile(input.path)));
     const pdf = await loading.promise;
+    if (pdf.numPages > limits.maxDocumentPages) throw new Error(`PDF has more than ${limits.maxDocumentPages.toLocaleString()} pages.`);
     const pages = [];
     for (let page = 1; page <= pdf.numPages; page++) {
       const content = await (await pdf.getPage(page)).getTextContent();
@@ -539,7 +601,7 @@ async function documentText(input, side) {
     return (side === 'right' ? orderedPages(pages.length, request.options.rightPageOrder).map(number => pages[number - 1]) : pages).join('\n\n');
   }
   if (ext === '.pptx') {
-    const zip = await JSZip.loadAsync(await fsp.readFile(input.path));
+    const zip = await loadArchive(input);
     const parser = new XMLParser({ ignoreAttributes: false });
     const names = Object.keys(zip.files).filter(name => /^ppt\/slides\/slide\d+\.xml$/.test(name)).sort((a,b) => Number(a.match(/\d+/)[0])-Number(b.match(/\d+/)[0]));
     const slides = [];
@@ -557,7 +619,7 @@ async function documentText(input, side) {
 async function documentStructure(input) {
   const ext = path.extname(input.path).toLowerCase();
   if (ext === '.docx') {
-    const zip = await JSZip.loadAsync(await fsp.readFile(input.path));
+    const zip = await loadArchive(input);
     const xml = zip.file('word/document.xml');
     if (!xml) throw new Error('DOCX document.xml is missing.');
     const parsed = new XMLParser({ ignoreAttributes: false }).parse(await xml.async('string'));
@@ -593,7 +655,9 @@ async function documentStructure(input) {
   }
   if (ext === '.pdf') {
     const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
-    const pdf = await pdfjs.getDocument({ data: new Uint8Array(await fsp.readFile(input.path)), password: request.options.password || undefined, useSystemFonts: true }).promise;
+    await boundedFile(input, limits.maxInputFileBytes, 'PDF');
+    const pdf = await pdfjs.getDocument(pdfOptions(await fsp.readFile(input.path))).promise;
+    if (pdf.numPages > limits.maxDocumentPages) throw new Error(`PDF has more than ${limits.maxDocumentPages.toLocaleString()} pages.`);
     const pages = [];
     for (let number = 1; number <= pdf.numPages; number++) {
       const page = await pdf.getPage(number);
@@ -605,7 +669,7 @@ async function documentStructure(input) {
     return { kind: 'pdf', paragraphs: [], images: [], pageCount: pdf.numPages, pages };
   }
   if (ext === '.pptx') {
-    const zip = await JSZip.loadAsync(await fsp.readFile(input.path));
+    const zip = await loadArchive(input);
     const slides = Object.keys(zip.files).filter(name => /^ppt\/slides\/slide\d+\.xml$/.test(name)).sort((a, b) => Number(a.match(/\d+/)[0]) - Number(b.match(/\d+/)[0]));
     const imageNames = Object.keys(zip.files).filter(name => /^ppt\/media\/[^/]+$/.test(name)).sort();
     const images = await Promise.all(imageNames.map(async name => ({ name: path.basename(name), hash: crypto.createHash('sha256').update(await zip.files[name].async('nodebuffer')).digest('hex') })));
