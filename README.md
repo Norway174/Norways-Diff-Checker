@@ -2,20 +2,30 @@
 
 A Windows desktop workspace for comparing text, images, documents, spreadsheets, and folders. It uses a frameless Electron window with isolated preload access, a React/TypeScript UI, and worker threads for comparison jobs. Comparisons run locally.
 
-## Development
+## App preview
 
-```powershell
-npm ci
-npm start
-```
-
-`npm run check` checks TypeScript and JavaScript syntax. `npm run build:dir` downloads and verifies the private LibreOffice copy, then produces an unpacked program at `dist\win-unpacked`. The packaged app also contains local OCR language data and native image engines. Launch `Norways Diff Checker.exe` directly from that folder; Electron includes its own runtime, so Node.js is not needed to run the built app.
-
-There is no installer or in-app update mechanism. Installer design can resume when the app is ready for distribution.
-
-## App data
-
-The app creates `%LOCALAPPDATA%\NorwaysDiffChecker` on launch and uses it directly for `preferences.json`, `projects`, Electron user data, and `cache`.
+<table>
+	<tr>
+		<td width="50%">
+			<img src="assets/app-preview/comparison-type-chooser.png" alt="Chooser for text, image, document, spreadsheet, and folder comparisons">
+			<br><strong>Comparison chooser</strong> - Start a new comparison or reopen a recent pair.
+		</td>
+		<td width="50%">
+			<img src="assets/app-preview/text-comparison-results.png" alt="Side-by-side text comparison with highlighted changes">
+			<br><strong>Text comparison</strong> - Review changes side by side and accept either version.
+		</td>
+	</tr>
+	<tr>
+		<td width="50%">
+			<img src="assets/app-preview/image-comparison-split-view.png" alt="Split image comparison with pixel comparison controls">
+			<br><strong>Image comparison</strong> - Inspect images in a split view with threshold controls.
+		</td>
+		<td width="50%">
+			<img src="assets/app-preview/text-comparison-empty.png" alt="Empty text comparison workspace ready for two inputs">
+			<br><strong>Text workspace</strong> - Paste text or browse for files on either side.
+		</td>
+	</tr>
+</table>
 
 ## Comparison workspace
 
@@ -28,3 +38,8 @@ The app creates `%LOCALAPPDATA%\NorwaysDiffChecker` on launch and uses it direct
 The Welcome chooser opens by default; Settings can restore the previous tabs instead. Drag and drop and Windows Open With populate tabs. Three or more inputs open a pairing chooser. Project files contain snapshots and options; folder projects keep their root paths and scan manifest.
 
 Settings can also add **Compare this file** and **Compare this folder** to Windows Explorer. A cold launch creates a new comparison. An already-running app checks the selected tab in each window, fills a compatible selected tab that has exactly one side populated, or creates a new tab of the input's specific type when no selected tab qualifies.
+
+## App data
+
+The app creates `%LOCALAPPDATA%\NorwaysDiffChecker` on launch and uses it directly for `preferences.json`, `projects`, Electron user data, and `cache`.
+
