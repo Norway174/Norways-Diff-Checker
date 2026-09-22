@@ -1507,10 +1507,10 @@ function App() {
       <div className="update-dialog-body"><h2>Version {updatePrompt.publishedVersion} is available</h2><p>You have version {updatePrompt.currentVersion}. Choose when to install the update.</p></div>
       <div className="update-dialog-actions">
         <button type="button" className="primary" disabled={updateBusy} onClick={() => void chooseUpdate('now')}>Update Now</button>
-        <button type="button" disabled={updateBusy} onClick={() => void chooseUpdate('close')}>Update on Close</button>
+        <button type="button" disabled={updateBusy} title="Update on Close downloads and installs silently after the app closes. It won’t reopen the app." onClick={() => void chooseUpdate('close')}>Update on Close</button>
         <button type="button" disabled={updateBusy} onClick={() => void chooseUpdate('ignore')}>Ignore</button>
         <button type="button" disabled={updateBusy} onClick={() => void chooseUpdate('skip')}>Ignore &amp; Skip Version</button>
-      </div><p className="update-dialog-note">Update on Close downloads and installs silently after the app closes. It won’t reopen the app.</p>
+      </div>
     </DraggableDialog>}
     {dropTarget && <div className={'drop-overlay ' + (dropTarget === 'multiple' ? 'drop-multiple' : 'drop-single')} aria-hidden="true">
       {dropTarget === 'multiple' ? <span>Drop files or folders to compare</span> : <><div className={'drop-half ' + (dropTarget === 'left' ? 'active' : '')}>Original</div><div className={'drop-half ' + (dropTarget === 'right' ? 'active' : '')}>Changed</div></>}
