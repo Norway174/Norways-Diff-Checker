@@ -9,7 +9,7 @@ import xml from 'highlight.js/lib/languages/xml';
 import css from 'highlight.js/lib/languages/css';
 import bash from 'highlight.js/lib/languages/bash';
 import sql from 'highlight.js/lib/languages/sql';
-import type { CompareEvent, CompareTab, DependencyProgress, Input, LibreOfficeStatus, Mode, OptionalDependency, Options, Preferences } from './types';
+import type { CompareEvent, CompareTab, DependencyProgress, Input, LibreOfficeStatus, Mode, OptionalDependency, Options, Preferences, UpdateDownloadProgress } from './types';
 import './bridge';
 import './styles.css';
 declare const __APP_VERSION__: string;
@@ -1124,6 +1124,7 @@ function App() {
   const activeIdRef = useRef<string | null>(null);
   const [welcome, setWelcome] = useState(false);
   const [updatePrompt, setUpdatePrompt] = useState<AvailableUpdate | null>(null);
+  const [updateDownload, setUpdateDownload] = useState<(UpdateDownloadProgress & { started: boolean; cancelRequested: boolean }) | null>(null);
   const [updateBusy, setUpdateBusy] = useState(false);
   const checkingUpdate = useRef(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -1170,6 +1171,9 @@ function App() {
     const timer = setTimeout(() => setNotice(''), 4000);
     return () => clearTimeout(timer);
   }, [notice, noticeTone, noticeSequence]);
+  useEffect(() => window.api.onUpdateDownloadProgress(progress => {
+    setUpdateDownload(current => current?.version === progress.version && !current.cancelRequested ? { ...current, ...progress, started: true } : current);
+  }), []);
   function invalidDrop(message: string) {
     showNotice(message);
     document.body.classList.add('invalid-drop');
@@ -1267,12 +1271,23 @@ function App() {
         showNotice(`Version ${version} will install after you close the app.`, 'success');
       } else {
         if (tabsRef.current.some(tab => tab.busy)) throw new Error('Wait for active comparisons to finish before updating.');
+        setUpdateDownload({ version, phase: 'Preparing update', receivedBytes: 0, totalBytes: 0, percent: 0, started: false, cancelRequested: false });
         await window.api.setSettings({ tabs: tabsRef.current.map(persistentTab), activeTabId: activeIdRef.current || undefined });
-        showNotice(`Downloading version ${version}…`, 'success');
         await window.api.startUpdate(version);
       }
-    } catch (error) { showNotice('Unable to update: ' + humanError(error)); }
+    } catch (error) {
+      setUpdateDownload(null);
+      if (!humanError(error).includes('Update cancelled.')) showNotice('Unable to update: ' + humanError(error));
+    }
     finally { setUpdateBusy(false); }
+  }
+  async function cancelImmediateUpdate() {
+    if (!updateDownload?.started || updateDownload.cancelRequested || updateDownload.phase === 'Starting installer') return;
+    try {
+      if (await window.api.cancelUpdateDownload()) {
+        setUpdateDownload(current => current ? { ...current, phase: 'Cancelling', cancelRequested: true } : current);
+      }
+    } catch (error) { showNotice('Unable to cancel update: ' + humanError(error)); }
   }
   async function run(tab: CompareTab) {
     if (!tab.left || !tab.right) return;
@@ -1502,8 +1517,8 @@ function App() {
         {active.type === 'folders' && <FolderView tab={active} onOpenPair={(left, right) => void openFolderPair(left, right)} />}
       </div><OptionsPanel tab={active} change={patch => changeOptions(active, patch)} flickerProgressRef={flickerProgressRef} flickerPaused={pausedFlickerTabs.has(active.id)} onToggleFlickerPaused={() => setPausedFlickerTabs(current => { const next = new Set(current); if (next.has(active.id)) next.delete(active.id); else next.add(active.id); return next; })} onManualFlick={() => setManualFlickToken(value => value + 1)} transitionRunning={runningTransitionTabs.has(active.id)} onToggleTransition={() => { const starting = !runningTransitionTabs.has(active.id); if (starting) changeOptions(active, { opacity: 0 }); setRunningTransitionTabs(current => { const next = new Set(current); if (starting) next.add(active.id); else next.delete(active.id); return next; }); }} /></div>
     </main> : <main className="empty-workspace"><MaterialIcon name="difference" className="empty-symbol" /><h2>Ready to compare</h2><p>Drop files or folders here, or start a new comparison.</p><button className="primary" onClick={() => setWelcome(true)}>New comparison</button></main>}
-    {welcome && !updatePrompt && <Welcome recent={prefs.recentCompares || []} recentEnabled={prefs.recentCompareLimit > 0} onCreate={type => addTab(type)} onOpenRecent={item => void openRecent(item)} onRemoveRecent={item => void removeRecent(item)} onCheckUpdates={() => void checkForUpdates(true)} onDismiss={() => setWelcome(false)} />}
-    {updatePrompt && <DraggableDialog title="Update available" eyebrow="NORWAYS DIFF CHECKER" icon="update" className="update-dialog" onClose={() => { if (!updateBusy) setUpdatePrompt(null); }}>
+    {welcome && !updatePrompt && !updateDownload && <Welcome recent={prefs.recentCompares || []} recentEnabled={prefs.recentCompareLimit > 0} onCreate={type => addTab(type)} onOpenRecent={item => void openRecent(item)} onRemoveRecent={item => void removeRecent(item)} onCheckUpdates={() => void checkForUpdates(true)} onDismiss={() => setWelcome(false)} />}
+    {updatePrompt && !updateDownload && <DraggableDialog title="Update available" eyebrow="NORWAYS DIFF CHECKER" icon="update" className="update-dialog" onClose={() => { if (!updateBusy) setUpdatePrompt(null); }}>
       <div className="update-dialog-body"><h2>Version {updatePrompt.publishedVersion} is available</h2><p>You have version {updatePrompt.currentVersion}. Choose when to install the update.</p></div>
       <div className="update-dialog-actions">
         <button type="button" className="primary" disabled={updateBusy} onClick={() => void chooseUpdate('now')}>Update Now</button>
@@ -1511,6 +1526,11 @@ function App() {
         <button type="button" disabled={updateBusy} onClick={() => void chooseUpdate('ignore')}>Ignore</button>
         <button type="button" disabled={updateBusy} onClick={() => void chooseUpdate('skip')}>Ignore &amp; Skip Version</button>
       </div>
+    </DraggableDialog>}
+    {updateDownload && <DraggableDialog title="Downloading update" eyebrow="NORWAYS DIFF CHECKER" icon="download" className="update-dialog" onClose={() => void cancelImmediateUpdate()}>
+      <div className="update-dialog-body"><h2>Updating to version {updateDownload.version}</h2><p>{updateDownload.phase}{updateDownload.totalBytes > 0 && updateDownload.phase === 'Downloading' ? ` · ${formatBytes(updateDownload.receivedBytes)} of ${formatBytes(updateDownload.totalBytes)}` : ''}</p></div>
+      <div className="update-download-progress" role="progressbar" aria-label="Installer download progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={updateDownload.percent}><div style={{ width: `${updateDownload.percent}%` }} /></div>
+      <div className="update-download-actions"><button type="button" disabled={!updateDownload.started || updateDownload.cancelRequested || updateDownload.phase === 'Starting installer'} onClick={() => void cancelImmediateUpdate()}>Cancel</button></div>
     </DraggableDialog>}
     {dropTarget && <div className={'drop-overlay ' + (dropTarget === 'multiple' ? 'drop-multiple' : 'drop-single')} aria-hidden="true">
       {dropTarget === 'multiple' ? <span>Drop files or folders to compare</span> : <><div className={'drop-half ' + (dropTarget === 'left' ? 'active' : '')}>Original</div><div className={'drop-half ' + (dropTarget === 'right' ? 'active' : '')}>Changed</div></>}

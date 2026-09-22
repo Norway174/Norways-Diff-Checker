@@ -69,6 +69,7 @@ export type Preferences = { restoreTabs: boolean; recentCompareLimit: number; re
 export type CompareEvent = { id: string; kind: 'progress' | 'result' | 'error' | 'cancelled'; value?: number; phase?: string; result?: any; error?: string; code?: string };
 export type LibreOfficeStatus = { installed: boolean; version: string; downloadBytes: number; installedBytes: number; installedBytesEstimate: number };
 export type DependencyProgress = { phase: string; receivedBytes: number; totalBytes: number; percent: number };
+export type UpdateDownloadProgress = DependencyProgress & { version: string };
 export type OptionalDependency = 'pdfium' | 'ocr';
 export type AppApi = {
   minimizeWindow(): Promise<void>; toggleMaximizeWindow(): Promise<boolean>; isWindowMaximized(): Promise<boolean>; closeWindow(): Promise<void>;
@@ -108,6 +109,8 @@ export type AppApi = {
   openMaintenanceTool(): Promise<{ status: 'opened' }>;
   checkForUpdates(): Promise<{ available: boolean; currentVersion: string; publishedVersion?: string }>;
   startUpdate(expectedVersion: string): Promise<void>;
+  cancelUpdateDownload(): Promise<boolean>;
+  onUpdateDownloadProgress(callback: (progress: UpdateDownloadProgress) => void): () => void;
   scheduleUpdateOnClose(expectedVersion: string): Promise<void>;
   cancelScheduledUpdate(): Promise<void>;
   writeClipboardText(text: string): Promise<void>;

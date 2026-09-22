@@ -26,6 +26,12 @@ struct State {
     primary: Mutex<String>,
     active_tabs: Mutex<HashMap<String, Value>>,
     scheduled_update: Mutex<Option<String>>,
+    update_download: Arc<Mutex<Option<UpdateDownload>>>,
+}
+
+struct UpdateDownload {
+    cancelled: Arc<AtomicBool>,
+    launching: bool,
 }
 
 fn data_root() -> PathBuf {
@@ -81,11 +87,13 @@ fn update_manifest() -> Result<Value, String> {
     let url = string(installer, "browser_download_url");
     let digest = string(installer, "digest");
     let hash = digest.strip_prefix("sha256:").ok_or("Update installer has no SHA-256 digest.")?;
+    let bytes = installer["size"].as_u64().ok_or("Update installer has no size.")?;
     if hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit())
+        || bytes == 0 || bytes > 100_000_000
         || url != format!("https://github.com/Norway174/Norways-Diff-Checker/releases/download/{tag}/{installer_name}") {
         return Err("Invalid update installer asset.".into());
     }
-    Ok(json!({"version":version,"commit":commit,"installerUrl":url,"installerSha256":hash}))
+    Ok(json!({"version":version,"commit":commit,"installerUrl":url,"installerSha256":hash,"installerBytes":bytes}))
 }
 fn check_update() -> Result<Value, String> {
     let current = build_commit();
@@ -97,12 +105,15 @@ fn check_update() -> Result<Value, String> {
     let published = string(&manifest, "version");
     Ok(json!({"available":version != published,"currentVersion":version,"publishedVersion":published}))
 }
-fn download_update(root: &Path, manifest: &Value) -> Result<PathBuf, String> {
+fn download_update<F>(root: &Path, manifest: &Value, mut progress: F) -> Result<PathBuf, String>
+where F: FnMut(u64, u64, &str) -> Result<(), String> {
     let commit = string(&manifest, "commit");
     let cache = root.join("cache/updates");
     fs::create_dir_all(&cache).map_err(|e| e.to_string())?;
     let installer = cache.join(format!("Installer-{commit}.exe"));
     let expected = string(&manifest, "installerSha256");
+    let total = manifest["installerBytes"].as_u64().ok_or("Invalid installer size.")?;
+    progress(0, total, "Downloading")?;
     if !installer.exists() || file_hash(&installer)? != expected {
         let partial = cache.join(format!("Installer-{commit}.partial"));
         let _ = fs::remove_file(&partial);
@@ -114,13 +125,16 @@ fn download_update(root: &Path, manifest: &Value) -> Result<PathBuf, String> {
             let mut buffer = [0u8; 65536];
             let mut received = 0u64;
             loop {
+                progress(received, total, "Downloading")?;
                 let n = reader.read(&mut buffer).map_err(|e| e.to_string())?;
                 if n == 0 { break; }
                 received += n as u64;
                 if received > 100_000_000 { return Err("Installer download is too large.".into()); }
                 file.write_all(&buffer[..n]).map_err(|e| e.to_string())?;
                 hasher.update(&buffer[..n]);
+                progress(received, total, "Downloading")?;
             }
+            progress(received, total, "Verifying")?;
             if format!("{:x}", hasher.finalize()) != expected { return Err("Installer download failed SHA-256 verification.".into()); }
             drop(file);
             fs::rename(&partial, &installer).map_err(|e| e.to_string())?;
@@ -129,14 +143,28 @@ fn download_update(root: &Path, manifest: &Value) -> Result<PathBuf, String> {
         if result.is_err() { let _ = fs::remove_file(&partial); }
         result?;
     }
+    progress(total, total, "Verifying")?;
     Ok(installer)
 }
-fn start_update(root: &Path, app: tauri::AppHandle, expected_version: &str) -> Result<(), String> {
+fn start_update(root: &Path, app: tauri::AppHandle, expected_version: &str,
+    update_download: &Arc<Mutex<Option<UpdateDownload>>>, cancelled: &Arc<AtomicBool>) -> Result<(), String> {
+    if cancelled.load(Ordering::SeqCst) { return Err("Update cancelled.".into()); }
+    let _ = app.emit("update-download-progress", json!({"version":expected_version,"phase":"Checking release","receivedBytes":0,"totalBytes":0,"percent":0}));
     let manifest = update_manifest()?;
     if string(&manifest, "version") != expected_version { return Err("The available update changed. Check again.".into()); }
     if build_version() == expected_version { return Ok(()); }
-    let installer = download_update(root, &manifest)?;
+    let installer = download_update(root, &manifest, |received, total, phase| {
+        if cancelled.load(Ordering::SeqCst) { return Err("Update cancelled.".into()); }
+        let percent = if total == 0 { 0 } else { (received.min(total) * 100 / total) as u8 };
+        let _ = app.emit("update-download-progress", json!({"version":expected_version,"phase":phase,"receivedBytes":received,"totalBytes":total,"percent":percent}));
+        Ok(())
+    })?;
+    let mut slot = update_download.lock().map_err(|e| e.to_string())?;
+    if cancelled.load(Ordering::SeqCst) { return Err("Update cancelled.".into()); }
+    if let Some(operation) = slot.as_mut() { operation.launching = true; }
+    let _ = app.emit("update-download-progress", json!({"version":expected_version,"phase":"Starting installer","receivedBytes":0,"totalBytes":0,"percent":100}));
     Command::new(installer).args(["/UPDATE", "/S"]).creation_flags_hidden().spawn().map_err(|e| e.to_string())?;
+    drop(slot);
     std::thread::spawn(move || { std::thread::sleep(std::time::Duration::from_millis(500)); app.exit(0); });
     Ok(())
 }
@@ -148,7 +176,7 @@ fn update_on_close(expected_commit: &str) -> Result<(), String> {
     if !string(&manifest, "commit").eq_ignore_ascii_case(expected_commit) {
         return Err("The scheduled update changed.".into());
     }
-    let installer = download_update(&data_root(), &manifest)?;
+    let installer = download_update(&data_root(), &manifest, |_, _, _| Ok(()))?;
     Command::new(installer).args(["/UPDATE", "/S", "/NOLAUNCH"])
         .creation_flags_hidden().spawn().map_err(|e| e.to_string())?;
     Ok(())
@@ -688,9 +716,31 @@ async fn start_update_async(app: tauri::AppHandle, state: tauri::State<'_, State
     if !state.jobs.lock().map_err(|e| e.to_string())?.is_empty() {
         return Err("A comparison is still running. The update will be retried later.".into());
     }
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let update_download = state.update_download.clone();
+    {
+        let mut slot = update_download.lock().map_err(|e| e.to_string())?;
+        if slot.is_some() { return Err("An update download is already running.".into()); }
+        *slot = Some(UpdateDownload { cancelled: cancelled.clone(), launching: false });
+    }
     let root = state.root.clone();
     *state.scheduled_update.lock().map_err(|e| e.to_string())? = None;
-    tauri::async_runtime::spawn_blocking(move || start_update(&root, app, &expected_version)).await.map_err(|e| e.to_string())?
+    let operation = update_download.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || start_update(&root, app, &expected_version, &operation, &cancelled))
+        .await.map_err(|e| e.to_string());
+    *update_download.lock().map_err(|e| e.to_string())? = None;
+    result?
+}
+
+#[tauri::command]
+fn cancel_update_download(state: tauri::State<'_, State>) -> Result<bool, String> {
+    let slot = state.update_download.lock().map_err(|e| e.to_string())?;
+    if let Some(operation) = slot.as_ref() {
+        if operation.launching { return Ok(false); }
+        operation.cancelled.store(true, Ordering::SeqCst);
+        return Ok(true);
+    }
+    Ok(false)
 }
 
 #[tauri::command]
@@ -904,6 +954,7 @@ fn main() {
             primary: Mutex::new("main".into()),
             active_tabs: Mutex::new(HashMap::new()),
             scheduled_update: Mutex::new(None),
+            update_download: Arc::new(Mutex::new(None)),
         })
         .invoke_handler(tauri::generate_handler![
             native_call,
@@ -914,6 +965,7 @@ fn main() {
             delete_optional_async,
             check_update_async,
             start_update_async,
+            cancel_update_download,
             schedule_update_on_close_async,
             cancel_scheduled_update,
             export_async

@@ -175,6 +175,10 @@ body.detaching-tab .app { cursor: alias; }
 .update-dialog-body p { color: #aaa; font-size: 12px; line-height: 1.5; }
 .update-dialog-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 6px 24px 24px; }
 .update-dialog-actions button { min-height: 38px; }
+.update-download-progress { height: 16px; margin: 8px 24px 16px; overflow: hidden; border: 1px solid #4a4a4d; border-radius: 4px; background: #19191b; }
+.update-download-progress > div { height: 100%; background: #1686d0; transition: width 120ms ease-out; }
+.update-download-actions { display: flex; justify-content: flex-end; padding: 0 24px 24px; }
+.update-download-actions button { min-width: 94px; min-height: 36px; }
 .welcome-columns { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 24px; margin-top: 24px; }
 .welcome-columns > div { min-width: 0; }
 .welcome-columns.recent-disabled { display: block; }

@@ -85,6 +85,8 @@ const api: AppApi = {
   openMaintenanceTool: () => call('open_maintenance'),
   checkForUpdates: () => invoke('check_update_async'),
   startUpdate: expectedVersion => invoke('start_update_async', { expectedVersion }),
+  cancelUpdateDownload: () => invoke('cancel_update_download'),
+  onUpdateDownloadProgress: callback => subscribe('update-download-progress', callback),
   scheduleUpdateOnClose: expectedVersion => invoke('schedule_update_on_close_async', { expectedVersion }),
   cancelScheduledUpdate: () => invoke('cancel_scheduled_update'),
   writeClipboardText: writeText,
