@@ -34,91 +34,294 @@ struct UpdateDownload {
     launching: bool,
 }
 
-fn data_root() -> PathBuf {
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(folder) = exe.parent() {
-            if folder.join("portable.flag").exists() || folder.join("preferences.json").exists() {
-                return folder.to_path_buf();
+const SETTINGS_FILE: &str = "preferences.json";
+
+fn select_data_root(
+    exe: Option<&Path>,
+    registry_root: Option<PathBuf>,
+    default_root: PathBuf,
+) -> PathBuf {
+    let exe_folder = exe.and_then(Path::parent);
+    if let Some(folder) = exe_folder {
+        if folder.join(SETTINGS_FILE).is_file() {
+            return folder.to_path_buf();
+        }
+        if let Some(parent) = folder.parent() {
+            if parent.join(SETTINGS_FILE).is_file() {
+                return parent.to_path_buf();
             }
         }
     }
-    #[cfg(windows)]
-    if let Ok(key) = winreg::RegKey::predef(winreg::enums::HKEY_CURRENT_USER)
-        .open_subkey(r"Software\NorwaysDiffChecker") {
+    if let Some(root) = registry_root {
+        return root;
+    }
+    if default_root.join(SETTINGS_FILE).is_file() {
+        return default_root;
+    }
+    exe_folder.map(Path::to_path_buf).unwrap_or(default_root)
+}
+
+#[cfg(windows)]
+fn registry_install_root() -> Option<PathBuf> {
+    use winreg::{enums::HKEY_CURRENT_USER, RegKey};
+
+    let software = RegKey::predef(HKEY_CURRENT_USER);
+    if let Ok(key) = software.open_subkey(r"Software\NorwaysDiffChecker") {
+        if let Ok(path) = key.get_value::<String, _>("AppPath") {
+            if !path.trim().is_empty() {
+                let mut root = PathBuf::from(path);
+                if root
+                    .file_name()
+                    .is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case("app"))
+                {
+                    root.pop();
+                }
+                return Some(root);
+            }
+        }
+        // DataPath was written by installers before 0.1.4.
         if let Ok(path) = key.get_value::<String, _>("DataPath") {
-            if !path.trim().is_empty() { return PathBuf::from(path); }
+            if !path.trim().is_empty() {
+                return Some(PathBuf::from(path));
+            }
         }
     }
+    software
+        .open_subkey(r"Software\Microsoft\Windows\CurrentVersion\Uninstall\NorwaysDiffChecker")
+        .ok()
+        .and_then(|key| key.get_value::<String, _>("InstallLocation").ok())
+        .filter(|path| !path.trim().is_empty())
+        .map(PathBuf::from)
+}
+
+#[cfg(not(windows))]
+fn registry_install_root() -> Option<PathBuf> {
+    None
+}
+
+fn data_root() -> PathBuf {
+    #[cfg(windows)]
     let base = std::env::var_os("LOCALAPPDATA")
         .map(PathBuf::from)
         .unwrap_or_else(|| std::env::temp_dir());
-    base.join("NorwaysDiffChecker")
+    #[cfg(not(windows))]
+    let base = std::env::temp_dir();
+    let exe = std::env::current_exe().ok();
+    select_data_root(
+        exe.as_deref(),
+        registry_install_root(),
+        base.join("NorwaysDiffChecker"),
+    )
 }
 
-fn build_commit() -> &'static str { option_env!("NDC_BUILD_COMMIT").unwrap_or("") }
+fn installed_copy() -> bool {
+    let Some(root) = registry_install_root() else {
+        return false;
+    };
+    let Ok(exe) = std::env::current_exe() else {
+        return false;
+    };
+    [
+        root.join("norways-diff-checker.exe"),
+        root.join("app/norways-diff-checker.exe"),
+    ]
+    .iter()
+    .any(|candidate| paths_equal(candidate, &exe))
+}
+
+fn paths_equal(left: &Path, right: &Path) -> bool {
+    let left = left.canonicalize().unwrap_or_else(|_| left.to_path_buf());
+    let right = right.canonicalize().unwrap_or_else(|_| right.to_path_buf());
+    #[cfg(windows)]
+    {
+        left.to_string_lossy()
+            .eq_ignore_ascii_case(&right.to_string_lossy())
+    }
+    #[cfg(not(windows))]
+    {
+        left == right
+    }
+}
+
+#[cfg(test)]
+mod data_root_tests {
+    use super::*;
+
+    fn test_root() -> PathBuf {
+        std::env::temp_dir().join(format!("ndc-data-root-test-{}", uuid::Uuid::new_v4()))
+    }
+
+    #[test]
+    fn settings_beside_executable_win_over_every_fallback() {
+        let root = test_root();
+        let exe_dir = root.join("portable");
+        let registry = root.join("registered");
+        let default = root.join("default");
+        fs::create_dir_all(&exe_dir).unwrap();
+        fs::write(exe_dir.join(SETTINGS_FILE), b"{}").unwrap();
+        assert_eq!(
+            select_data_root(Some(&exe_dir.join("app.exe")), Some(registry), default),
+            exe_dir
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn parent_settings_are_found_from_app_subfolder() {
+        let root = test_root();
+        let app = root.join("NorwaysDiffChecker/app");
+        fs::create_dir_all(&app).unwrap();
+        fs::write(root.join("NorwaysDiffChecker").join(SETTINGS_FILE), b"{}").unwrap();
+        assert_eq!(
+            select_data_root(Some(&app.join("app.exe")), None, root.join("default")),
+            root.join("NorwaysDiffChecker")
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn registry_precedes_existing_default_settings() {
+        let root = test_root();
+        let exe_dir = root.join("portable");
+        let registry = root.join("registered");
+        let default = root.join("default");
+        fs::create_dir_all(&exe_dir).unwrap();
+        fs::create_dir_all(&default).unwrap();
+        fs::write(default.join(SETTINGS_FILE), b"{}").unwrap();
+        assert_eq!(
+            select_data_root(
+                Some(&exe_dir.join("app.exe")),
+                Some(registry.clone()),
+                default
+            ),
+            registry
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn unused_portable_copy_falls_back_to_its_own_folder() {
+        let root = test_root();
+        let exe_dir = root.join("portable");
+        fs::create_dir_all(&exe_dir).unwrap();
+        assert_eq!(
+            select_data_root(Some(&exe_dir.join("app.exe")), None, root.join("default")),
+            exe_dir
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+fn build_commit() -> &'static str {
+    option_env!("NDC_BUILD_COMMIT").unwrap_or("")
+}
 fn build_version() -> String {
     serde_json::from_str::<Value>(include_str!("../../package.json"))
-        .ok().map(|v| string(&v, "version").to_string()).unwrap_or_default()
+        .ok()
+        .map(|v| string(&v, "version").to_string())
+        .unwrap_or_default()
 }
 
 fn update_manifest() -> Result<Value, String> {
-    let mut response = ureq::get("https://api.github.com/repos/Norway174/Norways-Diff-Checker/releases/latest")
-        .header("Accept", "application/vnd.github+json")
-        .header("User-Agent", "NorwaysDiffChecker")
-        .header("Cache-Control", "no-cache")
-        .call().map_err(|e| e.to_string())?;
+    let mut response =
+        ureq::get("https://api.github.com/repos/Norway174/Norways-Diff-Checker/releases/latest")
+            .header("Accept", "application/vnd.github+json")
+            .header("User-Agent", "NorwaysDiffChecker")
+            .header("Cache-Control", "no-cache")
+            .call()
+            .map_err(|e| e.to_string())?;
     let mut body = String::new();
-    response.body_mut().as_reader().take(131_072).read_to_string(&mut body).map_err(|e| e.to_string())?;
+    response
+        .body_mut()
+        .as_reader()
+        .take(131_072)
+        .read_to_string(&mut body)
+        .map_err(|e| e.to_string())?;
     let release: Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
     let tag = string(&release, "tag_name");
     let version = string(&release, "name");
-    let encoded_tag = format!("x-{}", version.as_bytes().iter().map(|byte| format!("{byte:02x}")).collect::<String>());
+    let encoded_tag = format!(
+        "x-{}",
+        version
+            .as_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    );
     let commit = string(&release, "target_commitish");
-    if version.is_empty() || version.len() > 255 || (tag != format!("v{version}") && tag != encoded_tag)
-        || tag.len() > 600 || !tag.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
-        || commit.len() != 40 || !commit.bytes().all(|b| b.is_ascii_hexdigit()) {
+    if version.is_empty()
+        || version.len() > 255
+        || (tag != format!("v{version}") && tag != encoded_tag)
+        || tag.len() > 600
+        || !tag
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+        || commit.len() != 40
+        || !commit.bytes().all(|b| b.is_ascii_hexdigit())
+    {
         return Err("Invalid update release metadata.".into());
     }
-    let asset_version = if tag == format!("v{version}") { version } else { tag };
+    let asset_version = if tag == format!("v{version}") {
+        version
+    } else {
+        tag
+    };
     let installer_name = format!("NorwaysDiffChecker-{asset_version}-Installer.exe");
-    let installer = release["assets"].as_array().ok_or("Update release has no assets.")?
-        .iter().find(|asset| string(asset, "name") == installer_name)
+    let installer = release["assets"]
+        .as_array()
+        .ok_or("Update release has no assets.")?
+        .iter()
+        .find(|asset| string(asset, "name") == installer_name)
         .ok_or("Update release has no installer.")?;
     let url = string(installer, "browser_download_url");
     let digest = string(installer, "digest");
-    let hash = digest.strip_prefix("sha256:").ok_or("Update installer has no SHA-256 digest.")?;
-    let bytes = installer["size"].as_u64().ok_or("Update installer has no size.")?;
+    let hash = digest
+        .strip_prefix("sha256:")
+        .ok_or("Update installer has no SHA-256 digest.")?;
+    let bytes = installer["size"]
+        .as_u64()
+        .ok_or("Update installer has no size.")?;
     if hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit())
         || bytes == 0 || bytes > 100_000_000
         || url != format!("https://github.com/Norway174/Norways-Diff-Checker/releases/download/{tag}/{installer_name}") {
         return Err("Invalid update installer asset.".into());
     }
-    Ok(json!({"version":version,"commit":commit,"installerUrl":url,"installerSha256":hash,"installerBytes":bytes}))
+    Ok(
+        json!({"version":version,"commit":commit,"installerUrl":url,"installerSha256":hash,"installerBytes":bytes}),
+    )
 }
 fn check_update() -> Result<Value, String> {
     let current = build_commit();
     let version = build_version();
-    if current.len() != 40 || std::env::current_exe().ok().and_then(|p| p.parent().map(|x| x.join("portable.flag").exists())).unwrap_or(false) {
+    if current.len() != 40 || !installed_copy() {
         return Ok(json!({"available":false,"currentVersion":version}));
     }
     let manifest = update_manifest()?;
     let published = string(&manifest, "version");
-    Ok(json!({"available":version != published,"currentVersion":version,"publishedVersion":published}))
+    Ok(
+        json!({"available":version != published,"currentVersion":version,"publishedVersion":published}),
+    )
 }
 fn download_update<F>(root: &Path, manifest: &Value, mut progress: F) -> Result<PathBuf, String>
-where F: FnMut(u64, u64, &str) -> Result<(), String> {
+where
+    F: FnMut(u64, u64, &str) -> Result<(), String>,
+{
     let commit = string(&manifest, "commit");
     let cache = root.join("cache/updates");
     fs::create_dir_all(&cache).map_err(|e| e.to_string())?;
     let installer = cache.join(format!("Installer-{commit}.exe"));
     let expected = string(&manifest, "installerSha256");
-    let total = manifest["installerBytes"].as_u64().ok_or("Invalid installer size.")?;
+    let total = manifest["installerBytes"]
+        .as_u64()
+        .ok_or("Invalid installer size.")?;
     progress(0, total, "Downloading")?;
     if !installer.exists() || file_hash(&installer)? != expected {
         let partial = cache.join(format!("Installer-{commit}.partial"));
         let _ = fs::remove_file(&partial);
         let result = (|| -> Result<(), String> {
-            let mut response = ureq::get(string(&manifest, "installerUrl")).call().map_err(|e| e.to_string())?;
+            let mut response = ureq::get(string(&manifest, "installerUrl"))
+                .call()
+                .map_err(|e| e.to_string())?;
             let mut reader = response.body_mut().as_reader();
             let mut file = File::create(&partial).map_err(|e| e.to_string())?;
             let mut hasher = Sha256::new();
@@ -127,45 +330,81 @@ where F: FnMut(u64, u64, &str) -> Result<(), String> {
             loop {
                 progress(received, total, "Downloading")?;
                 let n = reader.read(&mut buffer).map_err(|e| e.to_string())?;
-                if n == 0 { break; }
+                if n == 0 {
+                    break;
+                }
                 received += n as u64;
-                if received > 100_000_000 { return Err("Installer download is too large.".into()); }
+                if received > 100_000_000 {
+                    return Err("Installer download is too large.".into());
+                }
                 file.write_all(&buffer[..n]).map_err(|e| e.to_string())?;
                 hasher.update(&buffer[..n]);
                 progress(received, total, "Downloading")?;
             }
             progress(received, total, "Verifying")?;
-            if format!("{:x}", hasher.finalize()) != expected { return Err("Installer download failed SHA-256 verification.".into()); }
+            if format!("{:x}", hasher.finalize()) != expected {
+                return Err("Installer download failed SHA-256 verification.".into());
+            }
             drop(file);
             fs::rename(&partial, &installer).map_err(|e| e.to_string())?;
             Ok(())
         })();
-        if result.is_err() { let _ = fs::remove_file(&partial); }
+        if result.is_err() {
+            let _ = fs::remove_file(&partial);
+        }
         result?;
     }
     progress(total, total, "Verifying")?;
     Ok(installer)
 }
-fn start_update(root: &Path, app: tauri::AppHandle, expected_version: &str,
-    update_download: &Arc<Mutex<Option<UpdateDownload>>>, cancelled: &Arc<AtomicBool>) -> Result<(), String> {
-    if cancelled.load(Ordering::SeqCst) { return Err("Update cancelled.".into()); }
+fn start_update(
+    root: &Path,
+    app: tauri::AppHandle,
+    expected_version: &str,
+    update_download: &Arc<Mutex<Option<UpdateDownload>>>,
+    cancelled: &Arc<AtomicBool>,
+) -> Result<(), String> {
+    if cancelled.load(Ordering::SeqCst) {
+        return Err("Update cancelled.".into());
+    }
     let _ = app.emit("update-download-progress", json!({"version":expected_version,"phase":"Checking release","receivedBytes":0,"totalBytes":0,"percent":0}));
     let manifest = update_manifest()?;
-    if string(&manifest, "version") != expected_version { return Err("The available update changed. Check again.".into()); }
-    if build_version() == expected_version { return Ok(()); }
+    if string(&manifest, "version") != expected_version {
+        return Err("The available update changed. Check again.".into());
+    }
+    if build_version() == expected_version {
+        return Ok(());
+    }
     let installer = download_update(root, &manifest, |received, total, phase| {
-        if cancelled.load(Ordering::SeqCst) { return Err("Update cancelled.".into()); }
-        let percent = if total == 0 { 0 } else { (received.min(total) * 100 / total) as u8 };
+        if cancelled.load(Ordering::SeqCst) {
+            return Err("Update cancelled.".into());
+        }
+        let percent = if total == 0 {
+            0
+        } else {
+            (received.min(total) * 100 / total) as u8
+        };
         let _ = app.emit("update-download-progress", json!({"version":expected_version,"phase":phase,"receivedBytes":received,"totalBytes":total,"percent":percent}));
         Ok(())
     })?;
     let mut slot = update_download.lock().map_err(|e| e.to_string())?;
-    if cancelled.load(Ordering::SeqCst) { return Err("Update cancelled.".into()); }
-    if let Some(operation) = slot.as_mut() { operation.launching = true; }
+    if cancelled.load(Ordering::SeqCst) {
+        return Err("Update cancelled.".into());
+    }
+    if let Some(operation) = slot.as_mut() {
+        operation.launching = true;
+    }
     let _ = app.emit("update-download-progress", json!({"version":expected_version,"phase":"Starting installer","receivedBytes":0,"totalBytes":0,"percent":100}));
-    Command::new(installer).args(["/UPDATE", "/S"]).creation_flags_hidden().spawn().map_err(|e| e.to_string())?;
+    Command::new(installer)
+        .args(["/UPDATE", "/S"])
+        .creation_flags_hidden()
+        .spawn()
+        .map_err(|e| e.to_string())?;
     drop(slot);
-    std::thread::spawn(move || { std::thread::sleep(std::time::Duration::from_millis(500)); app.exit(0); });
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        app.exit(0);
+    });
     Ok(())
 }
 fn update_on_close(expected_commit: &str) -> Result<(), String> {
@@ -177,13 +416,16 @@ fn update_on_close(expected_commit: &str) -> Result<(), String> {
         return Err("The scheduled update changed.".into());
     }
     let installer = download_update(&data_root(), &manifest, |_, _, _| Ok(()))?;
-    Command::new(installer).args(["/UPDATE", "/S", "/NOLAUNCH"])
-        .creation_flags_hidden().spawn().map_err(|e| e.to_string())?;
+    Command::new(installer)
+        .args(["/UPDATE", "/S", "/NOLAUNCH"])
+        .creation_flags_hidden()
+        .spawn()
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 
 fn settings_path(state: &State) -> PathBuf {
-    state.root.join("preferences.json")
+    state.root.join(SETTINGS_FILE)
 }
 fn clean_settings(raw: Value) -> Value {
     let mut value = json!({
@@ -210,7 +452,9 @@ fn clean_settings(raw: Value) -> Value {
         }
     }
     if let Some(version) = raw.get("skippedUpdateVersion").and_then(Value::as_str) {
-        if version.len() <= 255 { value["skippedUpdateVersion"] = json!(version); }
+        if version.len() <= 255 {
+            value["skippedUpdateVersion"] = json!(version);
+        }
     }
     value
 }
@@ -240,6 +484,19 @@ fn save_settings(state: &State, value: Value) -> Result<Value, String> {
     .map_err(|e| e.to_string())?;
     fs::rename(temp, path).map_err(|e| e.to_string())?;
     Ok(clean)
+}
+
+fn ensure_settings(root: &Path) -> Result<(), String> {
+    let path = root.join(SETTINGS_FILE);
+    if path.exists() {
+        return Ok(());
+    }
+    fs::create_dir_all(root).map_err(|e| e.to_string())?;
+    fs::write(
+        path,
+        serde_json::to_vec_pretty(&clean_settings(Value::Null)).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())
 }
 fn string<'a>(value: &'a Value, key: &str) -> &'a str {
     value.get(key).and_then(Value::as_str).unwrap_or("")
@@ -292,9 +549,11 @@ fn show_status(root: &Path) -> Value {
         "installedBytes": if installed {1596766810u64} else {0}, "installedBytesEstimate": 1596766810u64})
 }
 const PDFIUM_HASH: &str = "79d4676b656cfb1abcea88f9ade3b4b0826c5200382db5f4ec72a636c598c118";
-const PDFIUM_ARCHIVE_HASH: &str = "73cc0de638ac2095e7445bf56a38200a5b7c7ca0e9f4ba144598f2457377ac08";
+const PDFIUM_ARCHIVE_HASH: &str =
+    "73cc0de638ac2095e7445bf56a38200a5b7c7ca0e9f4ba144598f2457377ac08";
 const OCR_DETECTION_HASH: &str = "f15cfb56bd02c4bf478a20343986504a1f01e1665c2b3a0ad66340f054b1b5ca";
-const OCR_RECOGNITION_HASH: &str = "e484866d4cce403175bd8d00b128feb08ab42e208de30e42cd9889d8f1735a6e";
+const OCR_RECOGNITION_HASH: &str =
+    "e484866d4cce403175bd8d00b128feb08ab42e208de30e42cd9889d8f1735a6e";
 
 fn file_hash(path: &Path) -> Result<String, String> {
     let mut file = File::open(path).map_err(|e| e.to_string())?;
@@ -302,27 +561,61 @@ fn file_hash(path: &Path) -> Result<String, String> {
     let mut buffer = [0u8; 65536];
     loop {
         let n = file.read(&mut buffer).map_err(|e| e.to_string())?;
-        if n == 0 { break; }
+        if n == 0 {
+            break;
+        }
         hasher.update(&buffer[..n]);
     }
     Ok(format!("{:x}", hasher.finalize()))
 }
 fn optional_status(root: &Path, kind: &str) -> Result<Value, String> {
     let (installed, version, download, installed_size) = match kind {
-        "pdfium" => (root.join("dependencies/pdfium/pdfium.dll").exists(), "151.0.7881.0", 3733154u64, 7211520u64),
-        "ocr" => (root.join("dependencies/ocr/text-detection.rten").exists() && root.join("dependencies/ocr/text-recognition.rten").exists(), "ocrs", 12226852u64, 12226852u64),
+        "pdfium" => (
+            root.join("dependencies/pdfium/pdfium.dll").exists(),
+            "151.0.7881.0",
+            3733154u64,
+            7211520u64,
+        ),
+        "ocr" => (
+            root.join("dependencies/ocr/text-detection.rten").exists()
+                && root.join("dependencies/ocr/text-recognition.rten").exists(),
+            "ocrs",
+            12226852u64,
+            12226852u64,
+        ),
         _ => return Err("Unknown optional dependency.".into()),
     };
-    Ok(json!({"installed":installed,"version":version,"downloadBytes":download,"installedBytes":if installed {installed_size} else {0},"installedBytesEstimate":installed_size}))
+    Ok(
+        json!({"installed":installed,"version":version,"downloadBytes":download,"installedBytes":if installed {installed_size} else {0},"installedBytesEstimate":installed_size}),
+    )
 }
-fn emit_optional_progress(window: &WebviewWindow, kind: &str, phase: &str, received: u64, total: u64) {
+fn emit_optional_progress(
+    window: &WebviewWindow,
+    kind: &str,
+    phase: &str,
+    received: u64,
+    total: u64,
+) {
     let _ = window.emit("optional-dependency-progress", json!({"kind":kind,"phase":phase,"receivedBytes":received,"totalBytes":total,"percent":received.saturating_mul(100)/total.max(1)}));
 }
-fn download_optional(root: &Path, window: &WebviewWindow, kind: &str, name: &str, url: &str, hash: &str, size: u64, base: u64, total: u64) -> Result<PathBuf, String> {
+fn download_optional(
+    root: &Path,
+    window: &WebviewWindow,
+    kind: &str,
+    name: &str,
+    url: &str,
+    hash: &str,
+    size: u64,
+    base: u64,
+    total: u64,
+) -> Result<PathBuf, String> {
     let cache = root.join("dependencies/downloads");
     fs::create_dir_all(&cache).map_err(|e| e.to_string())?;
     let target = cache.join(name);
-    if target.exists() && fs::metadata(&target).map_err(|e| e.to_string())?.len() == size && file_hash(&target)? == hash {
+    if target.exists()
+        && fs::metadata(&target).map_err(|e| e.to_string())?.len() == size
+        && file_hash(&target)? == hash
+    {
         emit_optional_progress(window, kind, "Downloading", base + size, total);
         return Ok(target);
     }
@@ -338,9 +631,13 @@ fn download_optional(root: &Path, window: &WebviewWindow, kind: &str, name: &str
         let mut hasher = Sha256::new();
         loop {
             let n = stream.read(&mut bytes).map_err(|e| e.to_string())?;
-            if n == 0 { break; }
+            if n == 0 {
+                break;
+            }
             received += n as u64;
-            if received > size { return Err(format!("{name} download exceeded expected size.")); }
+            if received > size {
+                return Err(format!("{name} download exceeded expected size."));
+            }
             file.write_all(&bytes[..n]).map_err(|e| e.to_string())?;
             hasher.update(&bytes[..n]);
             emit_optional_progress(window, kind, "Downloading", base + received, total);
@@ -353,7 +650,9 @@ fn download_optional(root: &Path, window: &WebviewWindow, kind: &str, name: &str
         fs::rename(&partial, &target).map_err(|e| e.to_string())?;
         Ok(())
     })();
-    if result.is_err() { let _ = fs::remove_file(&partial); }
+    if result.is_err() {
+        let _ = fs::remove_file(&partial);
+    }
     result?;
     Ok(target)
 }
@@ -361,48 +660,69 @@ fn install_optional(root: &Path, window: &WebviewWindow, kind: &str) -> Result<V
     let install = root.join("dependencies").join(kind);
     let staging = root.join("dependencies").join(format!("{kind}.installing"));
     let _ = optional_status(root, kind)?;
-    if staging.exists() { fs::remove_dir_all(&staging).map_err(|e| e.to_string())?; }
+    if staging.exists() {
+        fs::remove_dir_all(&staging).map_err(|e| e.to_string())?;
+    }
     fs::create_dir_all(&staging).map_err(|e| e.to_string())?;
     let result = (|| -> Result<(), String> {
         match kind {
             "pdfium" => {
                 let archive = download_optional(root, window, kind, "pdfium-win-x64-7881.tgz", "https://github.com/bblanchon/pdfium-binaries/releases/download/chromium%2F7881/pdfium-win-x64.tgz", PDFIUM_ARCHIVE_HASH, 3733154, 0, 3733154)?;
                 emit_optional_progress(window, kind, "Installing", 0, 7211520);
-                let decoder = flate2::read::GzDecoder::new(File::open(archive).map_err(|e| e.to_string())?);
+                let decoder =
+                    flate2::read::GzDecoder::new(File::open(archive).map_err(|e| e.to_string())?);
                 let mut archive = tar::Archive::new(decoder);
                 let mut found = false;
                 for entry in archive.entries().map_err(|e| e.to_string())? {
                     let mut entry = entry.map_err(|e| e.to_string())?;
-                    if entry.path().map_err(|e| e.to_string())?.as_ref() == Path::new("bin/pdfium.dll") {
-                        let mut file = File::create(staging.join("pdfium.dll")).map_err(|e| e.to_string())?;
+                    if entry.path().map_err(|e| e.to_string())?.as_ref()
+                        == Path::new("bin/pdfium.dll")
+                    {
+                        let mut file =
+                            File::create(staging.join("pdfium.dll")).map_err(|e| e.to_string())?;
                         std::io::copy(&mut entry, &mut file).map_err(|e| e.to_string())?;
                         found = true;
                         break;
                     }
                 }
-                if !found || file_hash(&staging.join("pdfium.dll"))? != PDFIUM_HASH { return Err("PDFium library failed SHA-256 verification.".into()); }
+                if !found || file_hash(&staging.join("pdfium.dll"))? != PDFIUM_HASH {
+                    return Err("PDFium library failed SHA-256 verification.".into());
+                }
                 emit_optional_progress(window, kind, "Installing", 7211520, 7211520);
             }
             "ocr" => {
                 let files = [
                     ("text-detection.rten", OCR_DETECTION_HASH, 2510284u64, 0u64),
-                    ("text-recognition.rten", OCR_RECOGNITION_HASH, 9716568u64, 2510284u64),
+                    (
+                        "text-recognition.rten",
+                        OCR_RECOGNITION_HASH,
+                        9716568u64,
+                        2510284u64,
+                    ),
                 ];
                 for (name, hash, size, base) in files {
                     let url = format!("https://ocrs-models.s3-accelerate.amazonaws.com/{name}");
-                    let file = download_optional(root, window, kind, name, &url, hash, size, base, 12226852)?;
+                    let file = download_optional(
+                        root, window, kind, name, &url, hash, size, base, 12226852,
+                    )?;
                     fs::copy(file, staging.join(name)).map_err(|e| e.to_string())?;
                 }
                 emit_optional_progress(window, kind, "Installing", 12226852, 12226852);
             }
             _ => return Err("Unknown optional dependency.".into()),
         }
-        if install.exists() { fs::remove_dir_all(&install).map_err(|e| e.to_string())?; }
+        if install.exists() {
+            fs::remove_dir_all(&install).map_err(|e| e.to_string())?;
+        }
         fs::rename(&staging, &install).map_err(|e| e.to_string())?;
-        if kind == "ocr" { compare::clear_ocr_cache(); }
+        if kind == "ocr" {
+            compare::clear_ocr_cache();
+        }
         Ok(())
     })();
-    if result.is_err() { let _ = fs::remove_dir_all(&staging); }
+    if result.is_err() {
+        let _ = fs::remove_dir_all(&staging);
+    }
     result?;
     optional_status(root, kind)
 }
@@ -631,8 +951,13 @@ fn native_call(
         "shell_menu_status" => Ok(json!(shell_installed())),
         "shell_menu_set" => set_shell(payload.as_bool().unwrap_or(false)).map(|v|json!(v)),
         "open_maintenance" => {
-            let installer = std::env::current_exe().map_err(|e| e.to_string())?
-                .parent().ok_or("Unable to locate the app folder.")?.join("Installer.exe");
+            let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+            let folder = exe.parent().ok_or("Unable to locate the app folder.")?;
+            let installer = if folder.file_name().is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case("app")) {
+                folder.parent().unwrap_or(folder).join("Installer.exe")
+            } else {
+                folder.join("Installer.exe")
+            };
             if installer.is_file() {
                 Command::new(installer).creation_flags_hidden().spawn().map_err(|e| e.to_string())?;
             } else {
@@ -708,11 +1033,17 @@ async fn install_libreoffice_async(
 
 #[tauri::command]
 async fn check_update_async() -> Result<Value, String> {
-    tauri::async_runtime::spawn_blocking(check_update).await.map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(check_update)
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-async fn start_update_async(app: tauri::AppHandle, state: tauri::State<'_, State>, expected_version: String) -> Result<(), String> {
+async fn start_update_async(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, State>,
+    expected_version: String,
+) -> Result<(), String> {
     if !state.jobs.lock().map_err(|e| e.to_string())?.is_empty() {
         return Err("A comparison is still running. The update will be retried later.".into());
     }
@@ -720,14 +1051,22 @@ async fn start_update_async(app: tauri::AppHandle, state: tauri::State<'_, State
     let update_download = state.update_download.clone();
     {
         let mut slot = update_download.lock().map_err(|e| e.to_string())?;
-        if slot.is_some() { return Err("An update download is already running.".into()); }
-        *slot = Some(UpdateDownload { cancelled: cancelled.clone(), launching: false });
+        if slot.is_some() {
+            return Err("An update download is already running.".into());
+        }
+        *slot = Some(UpdateDownload {
+            cancelled: cancelled.clone(),
+            launching: false,
+        });
     }
     let root = state.root.clone();
     *state.scheduled_update.lock().map_err(|e| e.to_string())? = None;
     let operation = update_download.clone();
-    let result = tauri::async_runtime::spawn_blocking(move || start_update(&root, app, &expected_version, &operation, &cancelled))
-        .await.map_err(|e| e.to_string());
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        start_update(&root, app, &expected_version, &operation, &cancelled)
+    })
+    .await
+    .map_err(|e| e.to_string());
     *update_download.lock().map_err(|e| e.to_string())? = None;
     result?
 }
@@ -736,7 +1075,9 @@ async fn start_update_async(app: tauri::AppHandle, state: tauri::State<'_, State
 fn cancel_update_download(state: tauri::State<'_, State>) -> Result<bool, String> {
     let slot = state.update_download.lock().map_err(|e| e.to_string())?;
     if let Some(operation) = slot.as_ref() {
-        if operation.launching { return Ok(false); }
+        if operation.launching {
+            return Ok(false);
+        }
         operation.cancelled.store(true, Ordering::SeqCst);
         return Ok(true);
     }
@@ -744,12 +1085,18 @@ fn cancel_update_download(state: tauri::State<'_, State>) -> Result<bool, String
 }
 
 #[tauri::command]
-async fn schedule_update_on_close_async(state: tauri::State<'_, State>, expected_version: String) -> Result<(), String> {
-    let manifest = tauri::async_runtime::spawn_blocking(update_manifest).await.map_err(|e| e.to_string())??;
+async fn schedule_update_on_close_async(
+    state: tauri::State<'_, State>,
+    expected_version: String,
+) -> Result<(), String> {
+    let manifest = tauri::async_runtime::spawn_blocking(update_manifest)
+        .await
+        .map_err(|e| e.to_string())??;
     if string(&manifest, "version") != expected_version || build_version() == expected_version {
         return Err("The available update changed. Check again.".into());
     }
-    *state.scheduled_update.lock().map_err(|e| e.to_string())? = Some(string(&manifest, "commit").to_string());
+    *state.scheduled_update.lock().map_err(|e| e.to_string())? =
+        Some(string(&manifest, "commit").to_string());
     Ok(())
 }
 
@@ -774,22 +1121,36 @@ async fn delete_libreoffice_async(state: tauri::State<'_, State>) -> Result<Valu
 }
 
 #[tauri::command]
-async fn install_optional_async(window: WebviewWindow, state: tauri::State<'_, State>, kind: String) -> Result<Value, String> {
+async fn install_optional_async(
+    window: WebviewWindow,
+    state: tauri::State<'_, State>,
+    kind: String,
+) -> Result<Value, String> {
     let root = state.root.clone();
     tauri::async_runtime::spawn_blocking(move || install_optional(&root, &window, &kind))
-        .await.map_err(|e| e.to_string())?
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-async fn delete_optional_async(state: tauri::State<'_, State>, kind: String) -> Result<Value, String> {
+async fn delete_optional_async(
+    state: tauri::State<'_, State>,
+    kind: String,
+) -> Result<Value, String> {
     let root = state.root.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let _ = optional_status(&root, &kind)?;
-        if kind == "ocr" { compare::clear_ocr_cache(); }
+        if kind == "ocr" {
+            compare::clear_ocr_cache();
+        }
         let path = root.join("dependencies").join(&kind);
-        if path.exists() { fs::remove_dir_all(path).map_err(|e| e.to_string())?; }
+        if path.exists() {
+            fs::remove_dir_all(path).map_err(|e| e.to_string())?;
+        }
         optional_status(&root, &kind)
-    }).await.map_err(|e| e.to_string())?
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -862,7 +1223,10 @@ fn start_compare(
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.get(1).map(String::as_str) == Some("--update-on-close") {
-        let result = args.get(2).ok_or_else(|| "Missing scheduled update commit.".to_string()).and_then(|commit| update_on_close(commit));
+        let result = args
+            .get(2)
+            .ok_or_else(|| "Missing scheduled update commit.".to_string())
+            .and_then(|commit| update_on_close(commit));
         if let Err(error) = result {
             let _ = fs::create_dir_all(data_root().join("cache/updates"));
             let _ = fs::write(data_root().join("cache/updates/last-error.txt"), error);
@@ -870,6 +1234,7 @@ fn main() {
         return;
     }
     let root = data_root();
+    let _ = ensure_settings(&root);
     let _ = fs::create_dir_all(root.join("cache/comparison-assets"));
     let asset_root = root.join("cache/comparison-assets");
     tauri::Builder::default()
@@ -977,11 +1342,17 @@ fn main() {
             let app = window.app_handle();
             let state = app.state::<State>();
             state.active_tabs.lock().unwrap().remove(window.label());
-            let remaining = app.webview_windows().into_keys().any(|label| label != window.label());
+            let remaining = app
+                .webview_windows()
+                .into_keys()
+                .any(|label| label != window.label());
             if !remaining {
                 if let Some(commit) = state.scheduled_update.lock().unwrap().take() {
                     if let Ok(exe) = std::env::current_exe() {
-                        let _ = Command::new(exe).args(["--update-on-close", &commit]).creation_flags_hidden().spawn();
+                        let _ = Command::new(exe)
+                            .args(["--update-on-close", &commit])
+                            .creation_flags_hidden()
+                            .spawn();
                     }
                 }
             }

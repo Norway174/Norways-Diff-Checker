@@ -74,7 +74,6 @@ jobs:
           Copy-Item 'src-tauri/target/release/norways-diff-checker.exe' (Join-Path $portable 'norways-diff-checker.exe')
           Copy-Item 'src-tauri/binaries/PDFIUM-LICENSE' (Join-Path $portable 'licenses/PDFIUM-LICENSE')
           Copy-Item 'src-tauri/models/LICENSE.md' (Join-Path $portable 'licenses/OCR-LICENSE.md')
-          [IO.File]::WriteAllText((Join-Path $portable 'portable.flag'), "portable`n")
           $zip = Join-Path $work "NorwaysDiffChecker-$assetVersion-Portable.zip"
           Compress-Archive -Path (Join-Path $portable '*') -DestinationPath $zip -CompressionLevel Optimal
           $nsis = Get-Command makensis.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -First 1

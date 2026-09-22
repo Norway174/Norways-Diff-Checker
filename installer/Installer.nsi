@@ -20,7 +20,7 @@ Unicode true
 Name "Norways Diff Checker"
 OutFile "${OUTPUT}"
 RequestExecutionLevel user
-InstallDir "$LOCALAPPDATA\NorwaysDiffChecker\app"
+InstallDir "$LOCALAPPDATA\NorwaysDiffChecker"
 InstallDirRegKey HKCU "Software\NorwaysDiffChecker" "AppPath"
 ShowInstDetails show
 !define MUI_ABORTWARNING
@@ -36,6 +36,7 @@ Var RadioUninstall
 !insertmacro MUI_PAGE_WELCOME
 Page custom MaintenancePage MaintenanceLeave
 !define MUI_PAGE_CUSTOMFUNCTION_PRE DirectoryPre
+!define MUI_PAGE_CUSTOMFUNCTION_LEAVE DirectoryLeave
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
 !define MUI_FINISHPAGE_RUN "$INSTDIR\norways-diff-checker.exe"
@@ -81,6 +82,9 @@ Function .onInit
       MessageBox MB_ICONSTOP "An installed copy is required for /UPDATE."
       Abort
     ${EndIf}
+    ${GetFileName} "$2" $3
+    StrCmp /i $3 "app" 0 +2
+      ${GetParent} "$2" $2
     StrCpy $INSTDIR $2
   ${EndIf}
 FunctionEnd
@@ -121,6 +125,11 @@ Function MaintenanceLeave
     ${Else}
       StrCpy $Action "update"
     ${EndIf}
+    ReadRegStr $2 HKCU "Software\NorwaysDiffChecker" "AppPath"
+    ${GetFileName} "$2" $3
+    StrCmp /i $3 "app" 0 +2
+      ${GetParent} "$2" $2
+    StrCpy $INSTDIR $2
   ${EndIf}
 FunctionEnd
 
@@ -130,11 +139,25 @@ Function DirectoryPre
   ${EndIf}
 FunctionEnd
 
+Function DirectoryLeave
+  ${GetFileName} "$INSTDIR" $0
+  StrCpy $1 $0 18
+  StrCmp /i $1 "NorwaysDiffChecker" DirectoryDone
+  StrCpy $INSTDIR "$INSTDIR\NorwaysDiffChecker"
+  DirectoryDone:
+FunctionEnd
+
 Section "Install" MainSection
   ${If} $Action == "uninstall"
     ReadRegStr $0 HKCU "Software\NorwaysDiffChecker" "AppPath"
     Exec '"$0\Uninstall.exe"'
     Quit
+  ${EndIf}
+  ${If} $Action == "install"
+    ${GetFileName} "$INSTDIR" $0
+    StrCpy $1 $0 18
+    StrCmp /i $1 "NorwaysDiffChecker" +2
+      StrCpy $INSTDIR "$INSTDIR\NorwaysDiffChecker"
   ${EndIf}
   InitPluginsDir
   SetOutPath "$PLUGINSDIR"
@@ -150,7 +173,7 @@ Section "Install" MainSection
   ${EndIf}
   WriteUninstaller "$INSTDIR\Uninstall.exe"
   WriteRegStr HKCU "Software\NorwaysDiffChecker" "AppPath" "$INSTDIR"
-  WriteRegStr HKCU "Software\NorwaysDiffChecker" "DataPath" "$LOCALAPPDATA\NorwaysDiffChecker"
+  DeleteRegValue HKCU "Software\NorwaysDiffChecker" "DataPath"
   WriteRegStr HKCU "Software\NorwaysDiffChecker" "InstalledCommit" "${APP_COMMIT}"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\NorwaysDiffChecker" "DisplayName" "Norways Diff Checker"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\NorwaysDiffChecker" "DisplayVersion" "${APP_VERSION}"
@@ -182,6 +205,6 @@ Section "Uninstall"
   Delete "$INSTDIR\norways-diff-checker.exe"
   Delete /REBOOTOK "$INSTDIR\Installer.exe"
   Delete "$INSTDIR\Uninstall.exe"
-  RMDir /r "$INSTDIR\licenses"
+  RMDir /r "$INSTDIR\app"
   RMDir "$INSTDIR"
 SectionEnd

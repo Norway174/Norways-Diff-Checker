@@ -2904,7 +2904,7 @@ dependencies = [
 
 [[package]]
 name = "norways-diff-checker"
-version = "0.2.0"
+version = "0.1.4"
 dependencies = [
  "base64 0.22.1",
  "calamine",
