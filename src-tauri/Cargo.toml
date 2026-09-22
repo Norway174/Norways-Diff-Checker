@@ -1,6 +1,6 @@
 [package]
 name = "norways-diff-checker"
-version = "0.1.4"
+version = "0.1.5"
 description = "Offline comparison desktop application"
 authors = ["Norway174"]
 edition = "2021"
