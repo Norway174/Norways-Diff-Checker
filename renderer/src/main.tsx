@@ -406,16 +406,17 @@ function Welcome({ recent, recentEnabled, onCreate, onOpenRecent, onRemoveRecent
 }
 type SettingsCategory = 'all' | 'general' | 'history' | 'system' | 'third-party';
 const settingsCategories: { id: SettingsCategory; label: string; icon: string; hint: string; keywords: string }[] = [
-  { id: 'all', label: 'All', icon: 'apps', hint: 'Every setting', keywords: 'all general history system third party startup workspace recent comparisons storage explorer context menu dependencies' },
-  { id: 'general', label: 'General', icon: 'tune', hint: 'Startup and workspace', keywords: 'restore previous tabs startup workspace' },
+  { id: 'all', label: 'All', icon: 'apps', hint: 'Every setting', keywords: 'all general history system third party startup workspace app version updates recent comparisons storage explorer context menu dependencies' },
+  { id: 'general', label: 'General', icon: 'tune', hint: 'Startup and workspace', keywords: 'restore previous tabs startup workspace app version check updates download install' },
   { id: 'history', label: 'History', icon: 'history', hint: 'Recent comparisons', keywords: 'recent comparisons history limit' },
   { id: 'system', label: 'System', icon: 'computer', hint: 'Storage and Explorer', keywords: 'app data folder windows explorer context menu install uninstall' },
   { id: 'third-party', label: 'Third Party', icon: 'extension', hint: 'Optional dependencies', keywords: 'third party optional libreoffice pdfium ocr models image pdf document dependency download delete word presentation render' }
 ];
-function Settings({ prefs, appDataPath, contextMenuInstalled, contextMenuBusy, initialQuery, onPrefs, onContextMenuBusy, onContextMenuInstalled, onNotice, onClose }: {
+function Settings({ prefs, appDataPath, contextMenuInstalled, contextMenuBusy, initialQuery, availableUpdate, updateDownload, updateChecking, updateBusy, onPrefs, onContextMenuBusy, onContextMenuInstalled, onCheckUpdate, onInstallUpdate, onNotice, onClose }: {
   prefs: Preferences; appDataPath: string; contextMenuInstalled: boolean | null; contextMenuBusy: boolean;
-  initialQuery: string;
+  initialQuery: string; availableUpdate: AvailableUpdate | null; updateDownload: (UpdateDownloadProgress & { started: boolean; cancelRequested: boolean }) | null; updateChecking: boolean; updateBusy: boolean;
   onPrefs: (value: Preferences) => void; onContextMenuBusy: (value: boolean) => void; onContextMenuInstalled: (value: boolean) => void;
+  onCheckUpdate: () => void; onInstallUpdate: (update: AvailableUpdate) => void;
   onNotice: (message: string, tone?: 'error' | 'success') => void; onClose: () => void;
 }) {
   const [category, setCategory] = useState<SettingsCategory>('all');
@@ -478,6 +479,9 @@ function Settings({ prefs, appDataPath, contextMenuInstalled, contextMenuBusy, i
           <div className="settings-group"><div className="settings-group-title">Startup</div><button className="settings-toggle" type="button" role="switch" aria-checked={prefs.restoreTabs} onClick={() => void savePreferences({ restoreTabs: !prefs.restoreTabs })}>
             <span><strong>Restore previous tabs</strong><small>Reopen your comparison workspace when the app starts.</small></span><span className="toggle-track" aria-hidden="true"><span /></span>
           </button></div>
+          <div className="settings-group"><div className="settings-group-title">Application updates</div><div className="settings-dependency"><div className="settings-action-row"><span><strong>App version {__APP_VERSION__}</strong><small>{availableUpdate ? `Version ${availableUpdate.publishedVersion} is available.` : 'Check for a newer version of Norways Diff Checker.'}</small></span><button className="primary" type="button" disabled={updateChecking || updateBusy || Boolean(updateDownload)} onClick={() => availableUpdate ? onInstallUpdate(availableUpdate) : onCheckUpdate()}>{updateDownload ? updateDownload.phase : updateBusy ? 'Preparing…' : updateChecking ? 'Checking…' : availableUpdate ? 'Update' : 'Check for Updates'}</button></div>
+            {updateDownload && <div className="dependency-progress" role="progressbar" aria-label="App update installation progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={updateDownload.percent}><div style={{ width: `${updateDownload.percent}%` }} /><span>{updateDownload.phase}{updateDownload.totalBytes > 0 && updateDownload.phase === 'Downloading' ? ` · ${formatBytes(updateDownload.receivedBytes)} of ${formatBytes(updateDownload.totalBytes)}` : ''}</span></div>}
+          </div></div>
         </>}
         {(selectedCategory === 'all' || selectedCategory === 'history') && <><div className="settings-section-head"><span className="settings-section-icon"><MaterialIcon name="history" /></span><div><h2>History</h2><p>Choose how many comparisons appear on Welcome.</p></div></div>
           <div className="settings-group"><div className="settings-group-title">Recent comparisons</div><label className="settings-number"><span><strong>Items to remember</strong><small>Set to 0 to disable recent comparisons.</small></span><ScrubbableNumber min={0} max={50} value={prefs.recentCompareLimit} onChange={recentCompareLimit => {
@@ -1124,8 +1128,10 @@ function App() {
   const activeIdRef = useRef<string | null>(null);
   const [welcome, setWelcome] = useState(false);
   const [updatePrompt, setUpdatePrompt] = useState<AvailableUpdate | null>(null);
+  const [availableUpdate, setAvailableUpdate] = useState<AvailableUpdate | null>(null);
   const [updateDownload, setUpdateDownload] = useState<(UpdateDownloadProgress & { started: boolean; cancelRequested: boolean }) | null>(null);
   const [updateBusy, setUpdateBusy] = useState(false);
+  const [updateChecking, setUpdateChecking] = useState(false);
   const checkingUpdate = useRef(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsQuery, setSettingsQuery] = useState('');
@@ -1239,23 +1245,29 @@ function App() {
     }, 600);
     return () => clearTimeout(timer);
   }, [tabs, activeId, prefs.restoreTabs]);
-  async function checkForUpdates(manual: boolean) {
+  async function checkForUpdates(manual: boolean, showPrompt = true) {
     if (checkingUpdate.current) return;
     checkingUpdate.current = true;
+    setUpdateChecking(true);
     try {
       const update = await window.api.checkForUpdates();
       if (update.available && update.publishedVersion) {
-        if (manual || prefsRef.current.skippedUpdateVersion !== update.publishedVersion) {
-          setUpdatePrompt({ currentVersion: update.currentVersion, publishedVersion: update.publishedVersion });
-        } else if (manual) showNotice('This version was skipped.', 'success');
-      } else if (manual) showNotice('You’re up to date.', 'success');
+        const available = { currentVersion: update.currentVersion, publishedVersion: update.publishedVersion };
+        setAvailableUpdate(available);
+        if (showPrompt && (manual || prefsRef.current.skippedUpdateVersion !== update.publishedVersion)) {
+          setUpdatePrompt(available);
+        }
+      } else {
+        setAvailableUpdate(null);
+        if (manual) showNotice('You’re up to date.', 'success');
+      }
     } catch (error) {
       if (manual) showNotice('Unable to check for updates: ' + humanError(error));
-    } finally { checkingUpdate.current = false; }
+    } finally { checkingUpdate.current = false; setUpdateChecking(false); }
   }
-  async function chooseUpdate(choice: 'now' | 'close' | 'ignore' | 'skip') {
-    if (!updatePrompt || updateBusy) return;
-    const version = updatePrompt.publishedVersion;
+  async function chooseUpdate(choice: 'now' | 'close' | 'ignore' | 'skip', selectedUpdate = updatePrompt) {
+    if (!selectedUpdate || updateBusy) return;
+    const version = selectedUpdate.publishedVersion;
     setUpdateBusy(true);
     try {
       if (choice === 'ignore') {
@@ -1271,6 +1283,7 @@ function App() {
         showNotice(`Version ${version} will install after you close the app.`, 'success');
       } else {
         if (tabsRef.current.some(tab => tab.busy)) throw new Error('Wait for active comparisons to finish before updating.');
+        setUpdatePrompt(null);
         setUpdateDownload({ version, phase: 'Preparing update', receivedBytes: 0, totalBytes: 0, percent: 0, started: false, cancelRequested: false });
         await window.api.setSettings({ tabs: tabsRef.current.map(persistentTab), activeTabId: activeIdRef.current || undefined });
         await window.api.startUpdate(version);
@@ -1518,7 +1531,7 @@ function App() {
       </div><OptionsPanel tab={active} change={patch => changeOptions(active, patch)} flickerProgressRef={flickerProgressRef} flickerPaused={pausedFlickerTabs.has(active.id)} onToggleFlickerPaused={() => setPausedFlickerTabs(current => { const next = new Set(current); if (next.has(active.id)) next.delete(active.id); else next.add(active.id); return next; })} onManualFlick={() => setManualFlickToken(value => value + 1)} transitionRunning={runningTransitionTabs.has(active.id)} onToggleTransition={() => { const starting = !runningTransitionTabs.has(active.id); if (starting) changeOptions(active, { opacity: 0 }); setRunningTransitionTabs(current => { const next = new Set(current); if (starting) next.add(active.id); else next.delete(active.id); return next; }); }} /></div>
     </main> : <main className="empty-workspace"><MaterialIcon name="difference" className="empty-symbol" /><h2>Ready to compare</h2><p>Drop files or folders here, or start a new comparison.</p><button className="primary" onClick={() => setWelcome(true)}>New comparison</button></main>}
     {welcome && !updatePrompt && !updateDownload && <Welcome recent={prefs.recentCompares || []} recentEnabled={prefs.recentCompareLimit > 0} onCreate={type => addTab(type)} onOpenRecent={item => void openRecent(item)} onRemoveRecent={item => void removeRecent(item)} onCheckUpdates={() => void checkForUpdates(true)} onDismiss={() => setWelcome(false)} />}
-    {updatePrompt && !updateDownload && <DraggableDialog title="Update available" eyebrow="NORWAYS DIFF CHECKER" icon="update" className="update-dialog" onClose={() => { if (!updateBusy) setUpdatePrompt(null); }}>
+    {updatePrompt && !updateDownload && !settingsOpen && <DraggableDialog title="Update available" eyebrow="NORWAYS DIFF CHECKER" icon="update" className="update-dialog" onClose={() => { if (!updateBusy) setUpdatePrompt(null); }}>
       <div className="update-dialog-body"><h2>Version {updatePrompt.publishedVersion} is available</h2><p>You have version {updatePrompt.currentVersion}. Choose when to install the update.</p></div>
       <div className="update-dialog-actions">
         <button type="button" className="primary" disabled={updateBusy} onClick={() => void chooseUpdate('now')}>Update Now</button>
@@ -1527,7 +1540,7 @@ function App() {
         <button type="button" disabled={updateBusy} onClick={() => void chooseUpdate('skip')}>Ignore &amp; Skip Version</button>
       </div>
     </DraggableDialog>}
-    {updateDownload && <DraggableDialog title="Downloading update" eyebrow="NORWAYS DIFF CHECKER" icon="download" className="update-dialog" onClose={() => void cancelImmediateUpdate()}>
+    {updateDownload && !settingsOpen && <DraggableDialog title="Downloading update" eyebrow="NORWAYS DIFF CHECKER" icon="download" className="update-dialog" onClose={() => void cancelImmediateUpdate()}>
       <div className="update-dialog-body"><h2>Updating to version {updateDownload.version}</h2><p>{updateDownload.phase}{updateDownload.totalBytes > 0 && updateDownload.phase === 'Downloading' ? ` · ${formatBytes(updateDownload.receivedBytes)} of ${formatBytes(updateDownload.totalBytes)}` : ''}</p></div>
       <div className="update-download-progress" role="progressbar" aria-label="Installer download progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={updateDownload.percent}><div style={{ width: `${updateDownload.percent}%` }} /></div>
       <div className="update-download-actions"><button type="button" disabled={!updateDownload.started || updateDownload.cancelRequested || updateDownload.phase === 'Starting installer'} onClick={() => void cancelImmediateUpdate()}>Cancel</button></div>
@@ -1536,9 +1549,9 @@ function App() {
       {dropTarget === 'multiple' ? <span>Drop files or folders to compare</span> : <><div className={'drop-half ' + (dropTarget === 'left' ? 'active' : '')}>Original</div><div className={'drop-half ' + (dropTarget === 'right' ? 'active' : '')}>Changed</div></>}
     </div>}
     {pairing && <Pairing inputs={pairing.inputs} type={pairing.type} onChangeType={type => setPairing({ ...pairing, type })} onCancel={() => setPairing(null)} onConfirm={(left, right, others, type) => { addTab(type, left, right, others); setPairing(null); }} />}
-    {settingsOpen && <Settings prefs={prefs} appDataPath={appDataPath} contextMenuInstalled={contextMenuInstalled} contextMenuBusy={contextMenuBusy} initialQuery={settingsQuery}
+    {settingsOpen && <Settings prefs={prefs} appDataPath={appDataPath} contextMenuInstalled={contextMenuInstalled} contextMenuBusy={contextMenuBusy} initialQuery={settingsQuery} availableUpdate={availableUpdate} updateDownload={updateDownload} updateChecking={updateChecking} updateBusy={updateBusy}
       onPrefs={value => { prefsRef.current = value; setPrefs(value); }} onContextMenuBusy={setContextMenuBusy} onContextMenuInstalled={setContextMenuInstalled}
-      onNotice={showNotice} onClose={() => { setSettingsOpen(false); setSettingsQuery(''); }} />}
+      onCheckUpdate={() => void checkForUpdates(true, false)} onInstallUpdate={update => void chooseUpdate('now', update)} onNotice={showNotice} onClose={() => { setSettingsOpen(false); setSettingsQuery(''); }} />}
     {notice && <div className={'toast ' + noticeTone} role={noticeTone === 'error' ? 'alert' : 'status'} title={noticeTone === 'error' ? 'Click to copy error' : 'Click to dismiss'} onClick={() => {
       if (noticeTone === 'error') void window.api.writeClipboardText(notice);
       else setNotice('');
