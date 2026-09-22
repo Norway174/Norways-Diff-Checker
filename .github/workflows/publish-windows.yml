@@ -61,53 +61,26 @@ jobs:
           $zipName = "portable-$commit.zip"
           $zip = Join-Path $work $zipName
           Compress-Archive -Path (Join-Path $portable '*') -DestinationPath $zip -CompressionLevel Optimal
-          $zipHash = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
-          $zipUrl = "$base/$zipName"
           $nsis = Get-Command makensis.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -First 1
           if (!$nsis) { $nsis = 'C:\Program Files (x86)\NSIS\makensis.exe' }
           if (!(Test-Path -LiteralPath $nsis)) { throw 'NSIS compiler not found' }
           $installerName = "Installer-$commit.exe"
           $installer = Join-Path $work $installerName
-          & $nsis "/DAPP_COMMIT=$commit" "/DPORTABLE_SHA=$zipHash" "/DPORTABLE_URL=$zipUrl" "/DOUTPUT=$installer" 'installer/Installer.nsi'
+          & $nsis "/DAPP_COMMIT=$commit" "/DPORTABLE_DIR=$portable" "/DOUTPUT=$installer" 'installer/Installer.nsi'
           if ($LASTEXITCODE -ne 0) { throw 'NSIS installer build failed' }
           $installerHash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
           $head = ((git ls-remote origin refs/heads/main) -split '\s+')[0]
           if ($LASTEXITCODE -ne 0 -or $head -ne $commit) { Write-Host 'A newer source commit exists; skipping this publication.'; exit 0 }
           $stableInstaller = Join-Path $work 'Installer.exe'
           Copy-Item -LiteralPath $installer -Destination $stableInstaller
-          gh release create $tag $zip $installer $stableInstaller --repo $repo --target $commit --title "Build $($commit.Substring(0, 8))" --notes "Windows build from commit $commit. Download Installer.exe to install or manage the app." --latest
-          if ($LASTEXITCODE -ne 0) { throw 'Could not create GitHub Release' }
-          $publish = Join-Path $env:RUNNER_TEMP 'ndc-downloads'
-          $downloadsRef = git ls-remote --heads origin downloads
-          if ($LASTEXITCODE -ne 0) { throw 'Could not check downloads branch' }
-          if ($downloadsRef) {
-            git fetch origin downloads
-            if ($LASTEXITCODE -ne 0) { throw 'Could not fetch downloads branch' }
-            git worktree add -B downloads $publish origin/downloads
-          } else {
-            git worktree add --detach $publish HEAD
-            if ($LASTEXITCODE -ne 0) { throw 'Could not create distribution worktree' }
-            git -C $publish checkout --orphan downloads
-            git -C $publish rm -rf --ignore-unmatch . | Out-Null
-          }
-          if ($LASTEXITCODE -ne 0) { throw 'Could not prepare downloads branch' }
-          Copy-Item -LiteralPath $zip -Destination (Join-Path $publish $zipName)
-          Copy-Item -LiteralPath $installer -Destination (Join-Path $publish $installerName)
-          Copy-Item -LiteralPath $installer -Destination (Join-Path $publish 'Installer.exe') -Force
           $manifest = [ordered]@{
             commit = $commit
-            portableUrl = $zipUrl
-            portableSha256 = $zipHash
             installerUrl = "$base/$installerName"
             installerSha256 = $installerHash
             builtAt = (Get-Date).ToUniversalTime().ToString('o')
           }
           $json = $manifest | ConvertTo-Json -Depth 3
-          [IO.File]::WriteAllText((Join-Path $publish 'latest.json'), $json, [Text.UTF8Encoding]::new($false))
-          git -C $publish config user.name 'github-actions[bot]'
-          git -C $publish config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git -C $publish add -A
-          git -C $publish commit -m "Publish Windows build $commit"
-          if ($LASTEXITCODE -ne 0) { throw 'Could not commit downloads' }
-          git -C $publish push origin downloads
-          if ($LASTEXITCODE -ne 0) { throw 'Could not publish downloads' }
+          $metadata = Join-Path $work 'update.json'
+          [IO.File]::WriteAllText($metadata, $json, [Text.UTF8Encoding]::new($false))
+          gh release create $tag $zip $installer $stableInstaller $metadata --repo $repo --target $commit --title "Build $($commit.Substring(0, 8))" --notes "Windows build from commit $commit. Download Installer.exe to install or manage the app. The installer includes the application and works offline." --latest
+          if ($LASTEXITCODE -ne 0) { throw 'Could not create GitHub Release' }

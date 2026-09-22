@@ -51,7 +51,7 @@ fn data_root() -> PathBuf {
 fn build_commit() -> &'static str { option_env!("NDC_BUILD_COMMIT").unwrap_or("") }
 
 fn update_manifest() -> Result<Value, String> {
-    let mut response = ureq::get("https://raw.githubusercontent.com/Norway174/Norways-Diff-Checker/downloads/latest.json")
+    let mut response = ureq::get("https://github.com/Norway174/Norways-Diff-Checker/releases/latest/download/update.json")
         .header("Cache-Control", "no-cache")
         .call().map_err(|e| e.to_string())?;
     let mut body = String::new();

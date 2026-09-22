@@ -7,11 +7,8 @@ Unicode true
 !ifndef APP_COMMIT
   !error "APP_COMMIT is required"
 !endif
-!ifndef PORTABLE_SHA
-  !error "PORTABLE_SHA is required"
-!endif
-!ifndef PORTABLE_URL
-  !error "PORTABLE_URL is required"
+!ifndef PORTABLE_DIR
+  !error "PORTABLE_DIR is required"
 !endif
 !ifndef OUTPUT
   !define OUTPUT "Installer.exe"
@@ -124,11 +121,13 @@ Section "Install" MainSection
   InitPluginsDir
   SetOutPath "$PLUGINSDIR"
   File /oname=install.ps1 "install.ps1"
-  DetailPrint "Downloading app build ${APP_COMMIT}..."
-  nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\install.ps1" -InstallDir "$INSTDIR" -PortableUrl "${PORTABLE_URL}" -ExpectedHash "${PORTABLE_SHA}" -ExpectedCommit "${APP_COMMIT}" -SelfInstaller "$EXEPATH"'
+  SetOutPath "$PLUGINSDIR\portable"
+  File /r "${PORTABLE_DIR}\*"
+  DetailPrint "Installing app build ${APP_COMMIT}..."
+  nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\install.ps1" -InstallDir "$INSTDIR" -SourceDir "$PLUGINSDIR\portable" -ExpectedCommit "${APP_COMMIT}" -SelfInstaller "$EXEPATH"'
   Pop $0
   ${If} $0 != 0
-    MessageBox MB_ICONSTOP "Installation failed. Check the installer details for the download or file error."
+    MessageBox MB_ICONSTOP "Installation failed. Check the installer details for the file error."
     Abort
   ${EndIf}
   WriteUninstaller "$INSTDIR\Uninstall.exe"
