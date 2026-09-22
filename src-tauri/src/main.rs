@@ -546,9 +546,26 @@ const LIBREOFFICE_VERSION: &str = "26.2.6";
 const LIBREOFFICE_DOWNLOAD_BYTES: u64 = 373252096;
 const LIBREOFFICE_INSTALLED_BYTES: u64 = 1596766810;
 
+struct LibreOfficePaths {
+    cache: PathBuf,
+    install: PathBuf,
+    staging: PathBuf,
+}
+
+fn libreoffice_paths(root: &Path) -> LibreOfficePaths {
+    let dependencies = root.join("dependencies");
+    LibreOfficePaths {
+        cache: dependencies.join("downloads"),
+        install: dependencies.join("libreoffice"),
+        staging: dependencies.join("libreoffice.installing"),
+    }
+}
+
 fn show_status(root: &Path) -> Value {
-    let installed = root
-        .join("dependencies/libreoffice/program/soffice.exe")
+    let installed = libreoffice_paths(root)
+        .install
+        .join("program")
+        .join("soffice.exe")
         .exists();
     json!({"installed": installed, "version": LIBREOFFICE_VERSION, "downloadBytes": LIBREOFFICE_DOWNLOAD_BYTES,
         "installedBytes": if installed {LIBREOFFICE_INSTALLED_BYTES} else {0}, "installedBytesEstimate": LIBREOFFICE_INSTALLED_BYTES})
@@ -645,6 +662,15 @@ mod disk_space_tests {
             error,
             "Not enough disk space to install LibreOffice. About 2.0 GB is required (including temporary files), but only 1.5 GB is available. Free at least 512 MB and try again."
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn libreoffice_msi_paths_use_native_windows_separators() {
+        let paths = libreoffice_paths(Path::new(r"C:\Apps\NorwaysDiffChecker"));
+        for path in [paths.cache, paths.install, paths.staging] {
+            assert!(!path.to_string_lossy().contains('/'));
+        }
     }
 }
 
@@ -852,9 +878,10 @@ fn install_optional(root: &Path, window: &WebviewWindow, kind: &str) -> Result<V
 }
 fn install_libreoffice(root: &Path, window: &WebviewWindow) -> Result<Value, String> {
     const HASH: &str = "f9877032fd908beb9c0ddf06df4af5c2e85f419c42e14876c4cce5aae5fb2660";
-    let cache = root.join("dependencies/downloads");
-    let install = root.join("dependencies/libreoffice");
-    let staging = root.join("dependencies/libreoffice.installing");
+    let paths = libreoffice_paths(root);
+    let cache = paths.cache;
+    let install = paths.install;
+    let staging = paths.staging;
     fs::create_dir_all(&cache).map_err(|e| e.to_string())?;
     if staging.exists() {
         fs::remove_dir_all(&staging).map_err(|e| e.to_string())?;
