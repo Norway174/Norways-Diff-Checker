@@ -83,7 +83,7 @@ Function .onInit
       Abort
     ${EndIf}
     ${GetFileName} "$2" $3
-    StrCmp /i $3 "app" 0 +2
+    StrCmp $3 "app" 0 +2
       ${GetParent} "$2" $2
     StrCpy $INSTDIR $2
   ${EndIf}
@@ -127,7 +127,7 @@ Function MaintenanceLeave
     ${EndIf}
     ReadRegStr $2 HKCU "Software\NorwaysDiffChecker" "AppPath"
     ${GetFileName} "$2" $3
-    StrCmp /i $3 "app" 0 +2
+    StrCmp $3 "app" 0 +2
       ${GetParent} "$2" $2
     StrCpy $INSTDIR $2
   ${EndIf}
@@ -142,7 +142,7 @@ FunctionEnd
 Function DirectoryLeave
   ${GetFileName} "$INSTDIR" $0
   StrCpy $1 $0 18
-  StrCmp /i $1 "NorwaysDiffChecker" DirectoryDone
+  StrCmp $1 "NorwaysDiffChecker" DirectoryDone
   StrCpy $INSTDIR "$INSTDIR\NorwaysDiffChecker"
   DirectoryDone:
 FunctionEnd
@@ -156,7 +156,7 @@ Section "Install" MainSection
   ${If} $Action == "install"
     ${GetFileName} "$INSTDIR" $0
     StrCpy $1 $0 18
-    StrCmp /i $1 "NorwaysDiffChecker" +2
+    StrCmp $1 "NorwaysDiffChecker" +2
       StrCpy $INSTDIR "$INSTDIR\NorwaysDiffChecker"
   ${EndIf}
   InitPluginsDir
