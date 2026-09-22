@@ -31,9 +31,6 @@ if (Test-Path -LiteralPath $backupExe) { Remove-Item -LiteralPath $backupExe -Fo
 if (Test-Path -LiteralPath $appDir) { Move-Item -LiteralPath $appDir -Destination $backupApp }
 if (Test-Path -LiteralPath $installedExe) { Move-Item -LiteralPath $installedExe -Destination $backupExe }
 try {
-    New-Item -ItemType Directory -Path $appDir -Force | Out-Null
-    Get-ChildItem -LiteralPath $source -Force | Copy-Item -Destination $appDir -Recurse -Force
-    Remove-Item -LiteralPath (Join-Path $appDir 'portable.flag') -Force -ErrorAction SilentlyContinue
     Copy-Item -LiteralPath $sourceExe -Destination $installedExe -Force
     $installedInstaller = Join-Path $destination 'Installer.exe'
     if (![string]::Equals([IO.Path]::GetFullPath($SelfInstaller), [IO.Path]::GetFullPath($installedInstaller), [StringComparison]::OrdinalIgnoreCase)) {
@@ -42,7 +39,6 @@ try {
     Remove-Item -LiteralPath $backupApp -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $backupExe -Force -ErrorAction SilentlyContinue
 } catch {
-    Remove-Item -LiteralPath $appDir -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $installedExe -Force -ErrorAction SilentlyContinue
     if (Test-Path -LiteralPath $backupApp) { Move-Item -LiteralPath $backupApp -Destination $appDir }
     if (Test-Path -LiteralPath $backupExe) { Move-Item -LiteralPath $backupExe -Destination $installedExe }
