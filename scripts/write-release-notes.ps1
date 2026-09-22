@@ -26,7 +26,8 @@ $commits = @(git log --reverse --format=%H $range)
 if ($LASTEXITCODE -ne 0 -or $commits.Count -eq 0) { throw 'No commits found for release notes.' }
 
 $lines = [System.Collections.Generic.List[string]]::new()
-$lines.Add('Download **Installer.exe** to install, update, repair, or uninstall the app. The installer includes the app and works offline. **Portable.zip** contains the standalone app.')
+$version = (Get-Content 'package.json' -Raw | ConvertFrom-Json).version
+$lines.Add("Download **NorwaysDiffChecker $version Installer.exe** to install, update, repair, or uninstall the app. The installer includes the app and works offline. **NorwaysDiffChecker $version Portable.zip** contains the standalone app.")
 $lines.Add('')
 $lines.Add('### Commits')
 $lines.Add('')

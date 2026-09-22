@@ -87,5 +87,5 @@ jobs:
           $notes = Join-Path $work 'release-notes.md'
           & 'scripts/write-release-notes.ps1' -Repository $repo -HeadCommit $commit -PreviousTag $env:PREVIOUS_RELEASE_TAG -OutputPath $notes
           if ($LASTEXITCODE -ne 0) { throw 'Could not generate release notes' }
-          gh release create $tag $zip $installer --repo $repo --target $commit --title $version --notes-file $notes --latest
+          gh release create $tag "$zip#NorwaysDiffChecker $version Portable.zip" "$installer#NorwaysDiffChecker $version Installer.exe" --repo $repo --target $commit --title $version --notes-file $notes --latest
           if ($LASTEXITCODE -ne 0) { throw 'Could not create GitHub Release' }
