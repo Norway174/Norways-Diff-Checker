@@ -9,7 +9,8 @@
     "build:ui": "vite build",
     "check": "tsc --noEmit && node --check electron/main.js && node --check electron/preload.js && node --check electron/external-open.js && node --check electron/shell-integration.js && node --check electron/compare-worker.js && node --check electron/exporters.js && node --check electron/export-worker.js && node --check electron/limits.js",
     "test": "node --test tests/*.test.js",
-    "build:dir": "npm run build:ui && powershell -NoProfile -ExecutionPolicy Bypass -File scripts/ensure-libreoffice.ps1 && electron-builder --win dir",
+    "build:installer": "node scripts/build-installer.js",
+    "build:dir": "npm run build:ui && electron-builder --win dir",
     "build:app": "npm run build:dir"
   },
   "devDependencies": {
@@ -58,21 +59,6 @@
     "asarUnpack": [
       "**/sharp/**/*",
       "**/@img/**/*"
-    ],
-    "extraResources": [
-      {
-        "from": "vendor/libreoffice-msi",
-        "to": "libreoffice",
-        "filter": [
-          "**/*",
-          "!*.msi",
-          "!help/**/*",
-          "!readmes/**/*",
-          "!share/autotext/**/*",
-          "!share/gallery/**/*",
-          "!share/template/**/*"
-        ]
-      }
     ],
     "win": {
       "target": [

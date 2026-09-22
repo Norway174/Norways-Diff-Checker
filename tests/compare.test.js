@@ -15,16 +15,20 @@ const { docxFromChunks, pdfFromComparison, imageViewFromComparison, textFromComp
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'norways-diff-test-'));
 const assetRoot = path.join(root, 'comparison-assets');
 const workerPath = path.join(__dirname, '../electron/compare-worker.js');
-function run(type, left, right, options = {}) {
+function run(type, left, right, options = {}, libreOfficePath = null) {
   return new Promise((resolve, reject) => {
     const assetId = crypto.randomUUID();
     const assetDir = path.join(assetRoot, assetId);
     fs.mkdirSync(assetDir, { recursive: true });
-    const worker = new Worker(workerPath, { workerData: { type, left, right, options, assetId, assetDir } });
+    const worker = new Worker(workerPath, { workerData: { type, left, right, options, assetId, assetDir, libreOfficePath } });
     let result;
     worker.on('message', message => {
       if (message.kind === 'result') result = message.result;
-      if (message.kind === 'error') reject(new Error(message.error));
+      if (message.kind === 'error') {
+        const error = new Error(message.error);
+        error.code = message.code;
+        reject(error);
+      }
     });
     worker.on('error', reject);
     worker.on('exit', code => { if (code === 0 && result !== undefined) resolve(result); else if (code !== 0) reject(new Error('Worker exited with code ' + code)); });
@@ -264,14 +268,15 @@ test('DOCX detects formatting and moved paragraphs', async () => {
   assert.ok(result.structuralChanges.some(change => change.kind === 'formatting'));
   assert.ok(result.structuralChanges.some(change => change.kind === 'moved'));
 });
-const bundledLibreOffice = path.join(__dirname, '../vendor/libreoffice-msi/program/soffice.exe');
-test('bundled LibreOffice renders DOCX pages without a system install', { skip: !fs.existsSync(bundledLibreOffice) }, async () => {
-  const a = path.join(root, 'render-a.docx'), b = path.join(root, 'render-b.docx');
+test('rendered Office pages request the optional LibreOffice dependency', async () => {
+  const a = path.join(root, 'missing-office-a.docx'), b = path.join(root, 'missing-office-b.docx');
   fs.writeFileSync(a, await Packer.toBuffer(new Document({ sections: [{ children: [new Paragraph('Page one')] }] })));
   fs.writeFileSync(b, await Packer.toBuffer(new Document({ sections: [{ children: [new Paragraph('Page two')] }] })));
-  const result = await run('documents', { path: a, name: 'render-a.docx' }, { path: b, name: 'render-b.docx' }, { view: 'image', page: 1 });
-  assert.match(result.pageImages.left, /^data:image\/png;base64,/);
-  assert.match(result.pageImages.right, /^data:image\/png;base64,/);
+  await assert.rejects(run('documents', { path: a, name: 'a.docx' }, { path: b, name: 'b.docx' }, { view: 'image', page: 1 }, null), error => {
+    assert.equal(error.code, 'LIBREOFFICE_REQUIRED');
+    assert.match(error.message, /Settings/);
+    return true;
+  });
 });
 test('DOCX embedded image changes are detected', async () => {
   const a = path.join(root, 'image-a.docx'), b = path.join(root, 'image-b.docx');

@@ -60,12 +60,15 @@ export type CompareTab = {
   jobId?: string;
   needsCompare?: boolean;
   error?: string;
+  dependencyError?: 'libreoffice';
   scans?: { at: string; count: number; changed: number; options: Partial<Options> }[];
   decisions?: Record<number, 'accept' | 'reject'>;
 };
 export type RecentCompare = { type: Mode; left: string; right: string };
 export type Preferences = { restoreTabs: boolean; recentCompareLimit: number; recentCompares: RecentCompare[]; lastImageView?: string; tabs?: CompareTab[]; activeTabId?: string };
-export type CompareEvent = { id: string; kind: 'progress' | 'result' | 'error' | 'cancelled'; value?: number; phase?: string; result?: any; error?: string };
+export type CompareEvent = { id: string; kind: 'progress' | 'result' | 'error' | 'cancelled'; value?: number; phase?: string; result?: any; error?: string; code?: string };
+export type LibreOfficeStatus = { installed: boolean; version: string; downloadBytes: number; installedBytes: number; installedBytesEstimate: number };
+export type DependencyProgress = { phase: string; receivedBytes: number; totalBytes: number; percent: number };
 export type AppApi = {
   minimizeWindow(): Promise<void>; toggleMaximizeWindow(): Promise<boolean>; isWindowMaximized(): Promise<boolean>; closeWindow(): Promise<void>;
   takeWindowBootstrap(): Promise<{ initialTab: CompareTab | null; primary: boolean }>;
@@ -91,6 +94,10 @@ export type AppApi = {
   onCompareEvent(callback: (event: CompareEvent) => void): () => void;
   getSettings(): Promise<Preferences>; setSettings(patch: Partial<Preferences>): Promise<Preferences>;
   getShellContextMenuInstalled(): Promise<boolean>; setShellContextMenuInstalled(enabled: boolean): Promise<boolean>;
+  getLibreOfficeStatus(): Promise<LibreOfficeStatus>;
+  installLibreOffice(): Promise<LibreOfficeStatus>;
+  deleteLibreOffice(): Promise<LibreOfficeStatus>;
+  onLibreOfficeProgress(callback: (progress: DependencyProgress) => void): () => void;
   getAppDataPath(): Promise<string>; openAppDataFolder(): Promise<void>;
   openExternalUrl(url: string): Promise<void>;
   openMaintenanceTool(): Promise<{ status: 'opened' }>;

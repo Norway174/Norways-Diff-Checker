@@ -45,7 +45,7 @@ The app creates `%LOCALAPPDATA%\NorwaysDiffChecker` on launch and uses it direct
 
 ## Download
 
-Download [NorwaysDiffCheckerInstaller.bat](https://github.com/Norway174/Norways-Diff-Checker/raw/refs/heads/main/installer/NorwaysDiffCheckerInstaller.bat), then run it to install, update, repair, or uninstall the app.
+Download [NorwaysDiffCheckerInstaller.exe](https://github.com/Norway174/Norways-Diff-Checker/raw/refs/heads/main/installer/NorwaysDiffCheckerInstaller.exe), then run it to install, update, repair, or uninstall the app. The executable uses the same icon as the application.
 
 The installer checks for Git, Node.js, and npm together. When any are missing, it lists everything required and offers three choices:
 
@@ -69,7 +69,7 @@ Start Menu and Desktop shortcuts can be created for this launcher. Preferences a
 
 Updates fetch the latest `main` commit and rebuild the packaged app. If the checkout contains local modifications or commits, the installer stops and offers a normal pull, a confirmed reset to `origin/main`, or cancellation. Because this installs the latest development commit rather than a versioned release, an occasional commit may be less stable than a tagged build.
 
-Building Electron, native modules, and the bundled LibreOffice runtime requires a sizeable download and several gigabytes of temporary and installed disk space. Subsequent updates reuse the checkout and npm cache but still rebuild the application.
+Building Electron and native modules requires a sizeable download and temporary disk space. LibreOffice is not bundled with the application; users who need rendered Word or presentation pages can download or delete the optional dependency from Settings. The app shows its download and installed size there.
 
 To run the project directly for development instead, install Git and Node.js with npm, then use:
 
@@ -78,4 +78,10 @@ git clone https://github.com/Norway174/Norways-Diff-Checker.git
 cd "Norways Diff Checker"
 npm ci
 npm run start
+```
+
+To rebuild the installer executable after changing its batch/PowerShell source or the app icon, run:
+
+```powershell
+npm run build:installer
 ```

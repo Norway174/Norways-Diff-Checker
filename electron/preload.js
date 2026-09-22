@@ -61,6 +61,14 @@ contextBridge.exposeInMainWorld('api', {
   setSettings: call('settings:set'),
   getShellContextMenuInstalled: call('shell-context-menu:status'),
   setShellContextMenuInstalled: call('shell-context-menu:set'),
+  getLibreOfficeStatus: call('dependency:libreoffice:status'),
+  installLibreOffice: call('dependency:libreoffice:install'),
+  deleteLibreOffice: call('dependency:libreoffice:delete'),
+  onLibreOfficeProgress(callback) {
+    const listener = (_event, progress) => callback(progress);
+    ipcRenderer.on('dependency:libreoffice:progress', listener);
+    return () => ipcRenderer.removeListener('dependency:libreoffice:progress', listener);
+  },
   getAppDataPath: call('app-data:path'),
   openAppDataFolder: call('app-data:open'),
   openExternalUrl: call('external:open-url'),

@@ -8,12 +8,16 @@ const { randomUUID } = require('node:crypto');
 const { pathToFileURL } = require('node:url');
 const { createOpenPathBatcher, selectExternalWindow } = require('./external-open');
 const { hasWindowsContextMenu, isWindowsContextMenuInstalled, setWindowsContextMenu } = require('./shell-integration');
+const { createLibreOfficeDependency } = require('./libreoffice-dependency');
 const limits = require('./limits');
 
 const localAppData = process.env.LOCALAPPDATA || path.join(path.dirname(app.getPath('appData')), 'Local');
 const dataDir = path.join(localAppData, 'NorwaysDiffChecker');
 const preferencesPath = path.join(dataDir, 'preferences.json');
-const maintenancePath = path.join(dataDir, 'NorwaysDiffCheckerInstaller.bat');
+const maintenancePaths = [
+  path.join(dataDir, 'NorwaysDiffCheckerInstaller.exe'),
+  path.join(dataDir, 'NorwaysDiffCheckerInstaller.bat')
+];
 const comparisonAssetsDir = path.join(dataDir, 'cache', 'comparison-assets');
 const rendererPath = path.join(__dirname, '../dist-ui/index.html');
 const rendererUrl = pathToFileURL(rendererPath).href;
@@ -27,6 +31,7 @@ fs.rmSync(comparisonAssetsDir, { recursive: true, force: true });
 fs.mkdirSync(comparisonAssetsDir, { recursive: true });
 app.setPath('userData', dataDir);
 app.setPath('sessionData', path.join(dataDir, 'cache'));
+const libreOffice = createLibreOfficeDependency({ root: dataDir, request: net.request });
 protocol.registerSchemesAsPrivileged([{ scheme: 'ndc-asset', privileges: { secure: true, standard: true, supportFetchAPI: true } }]);
 let mainWindow;
 const jobs = new Map();
@@ -101,7 +106,7 @@ function startQueuedJobs() {
     const [id, job] = entry;
     job.started = true;
     activeJobCount++;
-    const worker = new Worker(path.join(__dirname, 'compare-worker.js'), { workerData: job.request });
+    const worker = new Worker(path.join(__dirname, 'compare-worker.js'), { workerData: { ...job.request, libreOfficePath: libreOffice.status().installed ? libreOffice.executablePath : null } });
     job.worker = worker;
     worker.on('message', message => {
       if (!jobs.has(id)) return;
@@ -500,6 +505,11 @@ handle('shell-context-menu:set', (_event, enabled) => {
   setWindowsContextMenu(Boolean(enabled), { executablePath: process.execPath, appPath: app.getAppPath(), packaged: app.isPackaged });
   return isWindowsContextMenuInstalled({ executablePath: process.execPath, appPath: app.getAppPath(), packaged: app.isPackaged });
 });
+handle('dependency:libreoffice:status', () => libreOffice.status());
+handle('dependency:libreoffice:install', async event => libreOffice.install(progress => {
+  if (!event.sender.isDestroyed()) event.sender.send('dependency:libreoffice:progress', progress);
+}));
+handle('dependency:libreoffice:delete', () => libreOffice.remove());
 handle('app-data:path', () => dataDir);
 handle('app-data:open', async () => {
   const error = await shell.openPath(dataDir);
@@ -512,11 +522,12 @@ handle('external:open-url', async (_event, value) => {
 });
 handle('app:open-maintenance', () => {
   if (process.platform !== 'win32') throw new Error('The maintenance tool is only available on Windows.');
-  if (!fs.existsSync(maintenancePath)) throw new Error('The maintenance tool is not installed. Download the installer from the project README.');
-  const child = spawn(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', `start "" "${maintenancePath}"`], {
+  const maintenancePath = maintenancePaths.find(candidate => fs.existsSync(candidate));
+  if (!maintenancePath) throw new Error('The maintenance tool is not installed. Download the installer from the project README.');
+  const legacyBatch = path.extname(maintenancePath).toLowerCase() === '.bat';
+  const child = spawn(legacyBatch ? (process.env.ComSpec || 'cmd.exe') : maintenancePath, legacyBatch ? ['/d', '/s', '/c', `start "" "${maintenancePath}"`] : [], {
     detached: true,
-    stdio: 'ignore',
-    windowsHide: true
+    stdio: 'ignore'
   });
   child.unref();
   return { status: 'opened' };

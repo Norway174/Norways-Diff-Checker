@@ -10,7 +10,7 @@ import xml from 'highlight.js/lib/languages/xml';
 import css from 'highlight.js/lib/languages/css';
 import bash from 'highlight.js/lib/languages/bash';
 import sql from 'highlight.js/lib/languages/sql';
-import type { CompareEvent, CompareTab, Input, Mode, Options, Preferences } from './types';
+import type { CompareEvent, CompareTab, DependencyProgress, Input, LibreOfficeStatus, Mode, Options, Preferences } from './types';
 import './styles.css';
 declare const __APP_COMMIT__: string;
 for (const [name, grammar] of Object.entries({ javascript, typescript, json, python, xml, css, bash, sql })) hljs.registerLanguage(name, grammar);
@@ -97,6 +97,12 @@ function externalTypes(input: Input): Mode[] {
   return specific.length ? specific : ['text'];
 }
 function humanError(error: unknown) { return error instanceof Error ? error.message : String(error); }
+function formatBytes(value: number) {
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let amount = Math.max(0, value), unit = 0;
+  while (amount >= 1024 && unit < units.length - 1) { amount /= 1024; unit++; }
+  return `${amount >= 100 || unit === 0 ? amount.toFixed(0) : amount.toFixed(1)} ${units[unit]}`;
+}
 function MaterialIcon({ name, className = '' }: { name: string; className?: string }) {
   return <span className={'material-symbols-outlined ' + className} aria-hidden="true">{name}</span>;
 }
@@ -399,20 +405,25 @@ function Welcome({ recent, recentEnabled, onCreate, onOpenRecent, onRemoveRecent
     </div>
   </DraggableDialog>;
 }
-type SettingsCategory = 'all' | 'general' | 'history' | 'system';
+type SettingsCategory = 'all' | 'general' | 'history' | 'system' | 'third-party';
 const settingsCategories: { id: SettingsCategory; label: string; icon: string; hint: string; keywords: string }[] = [
-  { id: 'all', label: 'All', icon: 'apps', hint: 'Every setting', keywords: 'all general history system startup workspace recent comparisons storage explorer context menu' },
+  { id: 'all', label: 'All', icon: 'apps', hint: 'Every setting', keywords: 'all general history system third party startup workspace recent comparisons storage explorer context menu dependencies' },
   { id: 'general', label: 'General', icon: 'tune', hint: 'Startup and workspace', keywords: 'restore previous tabs startup workspace' },
   { id: 'history', label: 'History', icon: 'history', hint: 'Recent comparisons', keywords: 'recent comparisons history limit' },
-  { id: 'system', label: 'System', icon: 'computer', hint: 'Storage and Explorer', keywords: 'app data folder windows explorer context menu install uninstall' }
+  { id: 'system', label: 'System', icon: 'computer', hint: 'Storage and Explorer', keywords: 'app data folder windows explorer context menu install uninstall' },
+  { id: 'third-party', label: 'Third Party', icon: 'extension', hint: 'Optional dependencies', keywords: 'third party optional libreoffice document dependency download delete word presentation render' }
 ];
-function Settings({ prefs, appDataPath, contextMenuInstalled, contextMenuBusy, onPrefs, onContextMenuBusy, onContextMenuInstalled, onNotice, onClose }: {
+function Settings({ prefs, appDataPath, contextMenuInstalled, contextMenuBusy, initialQuery, onPrefs, onContextMenuBusy, onContextMenuInstalled, onNotice, onClose }: {
   prefs: Preferences; appDataPath: string; contextMenuInstalled: boolean | null; contextMenuBusy: boolean;
+  initialQuery: string;
   onPrefs: (value: Preferences) => void; onContextMenuBusy: (value: boolean) => void; onContextMenuInstalled: (value: boolean) => void;
-  onNotice: (message: string) => void; onClose: () => void;
+  onNotice: (message: string, tone?: 'error' | 'success') => void; onClose: () => void;
 }) {
   const [category, setCategory] = useState<SettingsCategory>('all');
-  const [query, setQuery] = useState('');
+  const [query, setQuery] = useState(initialQuery);
+  const [libreOffice, setLibreOffice] = useState<LibreOfficeStatus | null>(null);
+  const [dependencyProgress, setDependencyProgress] = useState<DependencyProgress | null>(null);
+  const [dependencyBusy, setDependencyBusy] = useState(false);
   const normalizedQuery = query.trim().toLowerCase();
   const visibleCategories = settingsCategories.filter(item => !normalizedQuery || (item.id !== 'all' && `${item.label} ${item.hint} ${item.keywords}`.toLowerCase().includes(normalizedQuery)));
   const selectedCategory = visibleCategories.some(item => item.id === category) ? category : visibleCategories[0]?.id;
@@ -421,6 +432,21 @@ function Settings({ prefs, appDataPath, contextMenuInstalled, contextMenuBusy, o
       const value = await window.api.setSettings(patch);
       onPrefs(value);
     } catch (error) { onNotice('Unable to save settings: ' + humanError(error)); }
+  };
+  useEffect(() => {
+    void window.api.getLibreOfficeStatus().then(setLibreOffice).catch(error => onNotice('Unable to check LibreOffice: ' + humanError(error)));
+    return window.api.onLibreOfficeProgress(setDependencyProgress);
+  }, []);
+  const changeLibreOffice = async () => {
+    setDependencyBusy(true);
+    try {
+      const deleting = Boolean(libreOffice?.installed);
+      const next = deleting ? await window.api.deleteLibreOffice() : await window.api.installLibreOffice();
+      setLibreOffice(next);
+      setDependencyProgress(null);
+      onNotice(deleting ? 'LibreOffice was deleted.' : 'LibreOffice is ready to use.', 'success');
+    } catch (error) { onNotice('Unable to update LibreOffice: ' + humanError(error)); }
+    finally { setDependencyBusy(false); }
   };
   return <DraggableDialog title="Settings" eyebrow="NORWAYS DIFF CHECKER" icon="settings" className="settings-modal" onClose={onClose}>
     <div className="settings-search"><MaterialIcon name="search" /><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search settings" aria-label="Search settings" />{query && <button type="button" title="Clear search" aria-label="Clear search" onClick={() => setQuery('')}><MaterialIcon name="close" /></button>}</div>
@@ -450,6 +476,11 @@ function Settings({ prefs, appDataPath, contextMenuInstalled, contextMenuBusy, o
             catch (error) { onNotice('Unable to update the Windows context menu: ' + humanError(error)); }
             finally { onContextMenuBusy(false); }
           }}>{contextMenuInstalled === null ? 'Checking…' : contextMenuBusy ? 'Updating…' : contextMenuInstalled ? 'Uninstall' : 'Install'}</button></div></div>
+        </>}
+        {(selectedCategory === 'all' || selectedCategory === 'third-party') && <><div className="settings-section-head"><span className="settings-section-icon"><MaterialIcon name="extension" /></span><div><h2>Third Party</h2><p>Manage optional software used by comparison features.</p></div></div>
+          <div className="settings-group"><div className="settings-group-title">Document dependency</div><div className="settings-dependency"><div className="settings-action-row"><span><strong>LibreOffice {libreOffice?.version || ''}</strong><small>{libreOffice?.installed ? `${formatBytes(libreOffice.installedBytes)} installed. Used only to render Word and presentation pages.` : libreOffice ? `${formatBytes(libreOffice.downloadBytes)} download, about ${formatBytes(libreOffice.installedBytesEstimate)} installed. Optional for rendered Office document pages.` : 'Checking local installation...'}</small></span><button className={libreOffice?.installed ? 'danger' : 'primary'} type="button" disabled={dependencyBusy || !libreOffice} onClick={() => void changeLibreOffice()}>{dependencyBusy ? dependencyProgress?.phase || 'Working…' : libreOffice?.installed ? 'Delete' : 'Download'}</button></div>
+            {dependencyBusy && <div className="dependency-progress" role="progressbar" aria-label="LibreOffice installation progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={dependencyProgress?.percent || 0}><div style={{ width: `${dependencyProgress?.percent || 0}%` }} /><span>{dependencyProgress?.phase || 'Preparing'}{dependencyProgress && ['Downloading', 'Installing'].includes(dependencyProgress.phase) ? ` · ${formatBytes(dependencyProgress.receivedBytes)} of ${formatBytes(dependencyProgress.totalBytes)}` : ''}</span></div>}
+          </div></div>
         </>}
       </section>
     </div>
@@ -1074,6 +1105,7 @@ function App() {
   const activeIdRef = useRef<string | null>(null);
   const [welcome, setWelcome] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsQuery, setSettingsQuery] = useState('');
   const [prefs, setPrefs] = useState<Preferences>({ restoreTabs: true, recentCompareLimit: 10, recentCompares: [] });
   const prefsRef = useRef<Preferences>({ restoreTabs: true, recentCompareLimit: 10, recentCompares: [] });
   const [contextMenuInstalled, setContextMenuInstalled] = useState<boolean | null>(null);
@@ -1149,7 +1181,7 @@ function App() {
           ...(scan ? { scans: [...(tab.scans || []), scan].slice(-50) } : {}) });
         if (tab.left?.path && tab.right?.path) void window.api.getSettings().then(value => { prefsRef.current = value; setPrefs(value); });
       }
-      if (event.kind === 'error') patchTab(tab.id, { busy: false, error: event.error || 'Comparison failed.', jobId: undefined });
+      if (event.kind === 'error') patchTab(tab.id, { busy: false, error: event.error || 'Comparison failed.', jobId: undefined, dependencyError: event.code === 'LIBREOFFICE_REQUIRED' ? 'libreoffice' : undefined });
       if (event.kind === 'cancelled') patchTab(tab.id, { busy: false, progress: 0, phase: '', jobId: undefined });
     });
     const stopOpen = window.api.onOpenPaths((paths, mode) => {
@@ -1174,7 +1206,7 @@ function App() {
     if (tab.jobId) await window.api.cancelCompare(tab.jobId);
     if (tab.result?.assetId) await window.api.releaseCompareAssets(tab.result.assetId);
     const jobId = crypto.randomUUID();
-    patchTab(tab.id, { busy: true, progress: 0, phase: 'Preparing', error: undefined, result: null, decisions: undefined, jobId, needsCompare: false });
+    patchTab(tab.id, { busy: true, progress: 0, phase: 'Preparing', error: undefined, dependencyError: undefined, result: null, decisions: undefined, jobId, needsCompare: false });
     try {
       await window.api.startCompare({ id: jobId, type: tab.type, left: tab.left, right: tab.right, options: tab.options });
     } catch (error) {
@@ -1384,7 +1416,7 @@ function App() {
       <div className="input-row"><InputSlot side="left" input={active.left} available={active.available} type={active.type} onBrowse={() => void browse(active, 'left')} onReplace={input => setInput(active, 'left', input)} onDrop={event => void fromDrop(event)} />
             <button className="swap" title="Swap sides" aria-label="Swap sides" onClick={() => { if (active.result?.assetId) void window.api.releaseCompareAssets(active.result.assetId); const next = { ...active, left: active.right, right: active.left, result: null, decisions: undefined }; patchTab(active.id, next); void run(next); }}><MaterialIcon name="swap_horiz" /></button>
         <InputSlot side="right" input={active.right} available={active.available} type={active.type} onBrowse={() => void browse(active, 'right')} onReplace={input => setInput(active, 'right', input)} onDrop={event => void fromDrop(event)} /></div>
-      {active.error && <div className="error-banner">{active.error}</div>}
+      {active.error && <div className="error-banner"><span>{active.error}</span>{active.dependencyError === 'libreoffice' && <button type="button" onClick={() => { setSettingsQuery('LibreOffice'); setSettingsOpen(true); }}>Open Settings</button>}</div>}
       {active.busy && <div className="progress"><div style={{ width: active.progress + '%' }} /></div>}
       <div className="content-layout"><div className="content-main">
         {active.type === 'text' && <TextView tab={active} onText={(side, text) => { const input = { ...(active[side] || { id: crypto.randomUUID(), name: side === 'left' ? 'Original text' : 'Changed text', types: ['text' as Mode] }), text }; setInput(active, side, input); }} onOption={patch => changeOptions(active, patch)} />}
@@ -1399,9 +1431,9 @@ function App() {
       {dropTarget === 'multiple' ? <span>Drop files or folders to compare</span> : <><div className={'drop-half ' + (dropTarget === 'left' ? 'active' : '')}>Original</div><div className={'drop-half ' + (dropTarget === 'right' ? 'active' : '')}>Changed</div></>}
     </div>}
     {pairing && <Pairing inputs={pairing.inputs} type={pairing.type} onChangeType={type => setPairing({ ...pairing, type })} onCancel={() => setPairing(null)} onConfirm={(left, right, others, type) => { addTab(type, left, right, others); setPairing(null); }} />}
-    {settingsOpen && <Settings prefs={prefs} appDataPath={appDataPath} contextMenuInstalled={contextMenuInstalled} contextMenuBusy={contextMenuBusy}
+    {settingsOpen && <Settings prefs={prefs} appDataPath={appDataPath} contextMenuInstalled={contextMenuInstalled} contextMenuBusy={contextMenuBusy} initialQuery={settingsQuery}
       onPrefs={value => { prefsRef.current = value; setPrefs(value); }} onContextMenuBusy={setContextMenuBusy} onContextMenuInstalled={setContextMenuInstalled}
-      onNotice={showNotice} onClose={() => setSettingsOpen(false)} />}
+      onNotice={showNotice} onClose={() => { setSettingsOpen(false); setSettingsQuery(''); }} />}
     {notice && <div className={'toast ' + noticeTone} role={noticeTone === 'error' ? 'alert' : 'status'} title={noticeTone === 'error' ? 'Click to copy error' : 'Click to dismiss'} onClick={() => {
       if (noticeTone === 'error') void window.api.writeClipboardText(notice);
       else setNotice('');

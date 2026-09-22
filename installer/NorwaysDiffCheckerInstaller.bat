@@ -13,7 +13,8 @@ $RepositoryUrl = 'https://github.com/Norway174/Norways-Diff-Checker.git'
 $Root = Join-Path $env:LOCALAPPDATA 'NorwaysDiffChecker'
 $AppDir = Join-Path $Root 'app'
 $ToolsDir = Join-Path $Root 'tools'
-$InstallerPath = Join-Path $Root 'NorwaysDiffCheckerInstaller.bat'
+$InstallerPath = Join-Path $Root 'NorwaysDiffCheckerInstaller.exe'
+$LegacyInstallerPath = Join-Path $Root 'NorwaysDiffCheckerInstaller.bat'
 $LauncherPath = Join-Path $Root 'Norways Diff Checker.exe'
 $RealExe = Join-Path $AppDir 'dist\win-unpacked\Norways Diff Checker.exe'
 $StatePath = Join-Path $Root 'installer-state.json'
@@ -406,7 +407,6 @@ function Assert-Package {
     $required = @(
         $RealExe,
         (Join-Path $AppDir 'dist\win-unpacked\resources\app.asar'),
-        (Join-Path $AppDir 'dist\win-unpacked\resources\libreoffice\program\soffice.exe'),
         (Join-Path $AppDir 'dist\win-unpacked\resources\app.asar.unpacked\node_modules\@napi-rs\canvas-win32-x64-msvc\skia.win32-x64-msvc.node'),
         (Join-Path $AppDir 'dist\win-unpacked\resources\app.asar.unpacked\node_modules\@img\sharp-win32-x64\lib\sharp-win32-x64-0.35.4.node')
     )
@@ -431,7 +431,7 @@ internal static class Launcher
         string target = Path.Combine(root, "app", "dist", "win-unpacked", "Norways Diff Checker.exe");
         if (!File.Exists(target))
         {
-            MessageBox.Show("The application package is missing. Run NorwaysDiffCheckerInstaller.bat and choose Repair.", "Norways Diff Checker", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            MessageBox.Show("The application package is missing. Run NorwaysDiffCheckerInstaller.exe and choose Repair.", "Norways Diff Checker", MessageBoxButtons.OK, MessageBoxIcon.Error);
             return;
         }
         var start = new ProcessStartInfo(target)
@@ -491,7 +491,7 @@ function Save-State([string]$Git) {
 }
 
 function Schedule-InstallerRefresh {
-    $source = Join-Path $AppDir 'installer\NorwaysDiffCheckerInstaller.bat'
+    $source = Join-Path $AppDir 'installer\NorwaysDiffCheckerInstaller.exe'
     if (-not (Test-Path -LiteralPath $source)) { return }
     $current = [Environment]::GetEnvironmentVariable('NDC_INSTALLER')
     if ($current -and ([IO.Path]::GetFullPath($current) -eq [IO.Path]::GetFullPath($InstallerPath))) {
@@ -533,7 +533,9 @@ function Install-App {
         Write-Step 1 1 'Download the latest source from GitHub'
         Invoke-External $tools.Git @('clone', '--branch', 'main', '--single-branch', $RepositoryUrl, $AppDir)
     }
-    Copy-Item -LiteralPath ([Environment]::GetEnvironmentVariable('NDC_INSTALLER')) -Destination $InstallerPath -Force
+    $currentInstaller = [Environment]::GetEnvironmentVariable('NDC_INSTALLER')
+    $currentDestination = if ([IO.Path]::GetExtension($currentInstaller) -eq '.exe') { $InstallerPath } else { $LegacyInstallerPath }
+    Copy-Item -LiteralPath $currentInstaller -Destination $currentDestination -Force
     Complete-Build $tools $true
     Write-Success 'Norways Diff Checker is installed.'
     Write-Host "  Launcher  $LauncherPath" -ForegroundColor DarkGray
@@ -588,7 +590,7 @@ function Uninstall-App {
     if ($choice -eq 'D' -and (Read-TypedChoice 'Type DELETE to permanently remove all app data, or C to cancel' @('DELETE', 'C')) -eq 'C') { return }
 
     Remove-ExplorerKeys
-    Remove-Item -LiteralPath $StartMenuShortcut, $DesktopShortcut, $LauncherPath, $StatePath -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $StartMenuShortcut, $DesktopShortcut, $LauncherPath, $StatePath, $LegacyInstallerPath -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $AppDir, $ToolsDir -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath (Join-Path $Root 'cache') -Recurse -Force -ErrorAction SilentlyContinue
     if ($choice -eq 'D') {

@@ -245,6 +245,12 @@ body.detaching-tab .app { cursor: alias; }
 .settings-action-row button.danger { border-color: #8d4141; background: #6c2f2f; color: #fff; }
 .settings-action-row button.danger:hover { background: #7c3939; }
 .settings-action-row button:disabled { opacity: .65; cursor: wait; }
+.settings-dependency { display: grid; }
+.dependency-progress { position: relative; height: 30px; margin: 0 14px 14px; overflow: hidden; border: 1px solid #45454a; background: #1d1d1f; }
+.dependency-progress > div { position: absolute; inset: 0 auto 0 0; background: #17608e; transition: width 150ms ease-out; }
+.dependency-progress > span { position: relative; z-index: 1; display: grid; place-items: center; height: 100%; color: #e5e5e7; font-size: 10px; font-variant-numeric: tabular-nums; }
+.error-banner { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.error-banner button { flex: 0 0 auto; border-color: #d38585; background: #5d2c2c; color: #fff; }
 .settings-empty { display: grid; place-items: center; align-content: center; min-height: 260px; gap: 7px; color: #8e8e93; text-align: center; }
 .settings-empty .material-symbols-outlined { margin-bottom: 4px; color: #66666b; font-size: 42px; }
 .settings-empty strong { color: #d5d5d8; }

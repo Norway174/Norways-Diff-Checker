@@ -54,10 +54,12 @@ function pdfOptions(bytes) {
 async function officePdf(input) {
   throwIfCancelled();
   if (path.extname(input.path).toLowerCase() === '.pdf') return { file: input.path, clean: async () => {} };
-  const packagedEngine = process.resourcesPath && path.join(process.resourcesPath, 'libreoffice', 'program', 'soffice.exe');
-  const engine = packagedEngine && fs.existsSync(packagedEngine) ? packagedEngine
-    : path.join(__dirname, '..', 'vendor', 'libreoffice-msi', 'program', 'soffice.exe');
-  if (!fs.existsSync(engine)) throw new Error('Bundled LibreOffice engine is missing. Rebuild the app assets.');
+  const engine = request.libreOfficePath;
+  if (!engine || !fs.existsSync(engine)) {
+    const error = new Error('LibreOffice is required to render Word and presentation pages. Download it in Settings.');
+    error.code = 'LIBREOFFICE_REQUIRED';
+    throw error;
+  }
   const work = await fsp.mkdtemp(path.join(os.tmpdir(), 'ndc-office-'));
   const output = path.join(work, path.parse(input.path).name + '.pdf');
   const profile = pathToFileURL(path.join(work, 'profile')).href;
@@ -742,5 +744,5 @@ async function run() {
 }
 run().catch(error => parentPort.postMessage(cancelled
   ? { kind: 'cancelled' }
-  : { kind: 'error', error: error.message || String(error) }
+  : { kind: 'error', error: error.message || String(error), code: error.code }
 )).finally(() => parentPort.close());
