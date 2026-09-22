@@ -50,7 +50,6 @@ jobs:
           $commit = $env:GITHUB_SHA.ToLowerInvariant()
           $repo = 'Norway174/Norways-Diff-Checker'
           $tag = "commit-$commit"
-          $base = "https://github.com/$repo/releases/download/$tag"
           $work = Join-Path $env:RUNNER_TEMP 'ndc-publish'
           $portable = Join-Path $work 'portable'
           New-Item -ItemType Directory -Path (Join-Path $portable 'licenses') -Force | Out-Null
@@ -58,29 +57,15 @@ jobs:
           Copy-Item 'src-tauri/binaries/PDFIUM-LICENSE' (Join-Path $portable 'licenses/PDFIUM-LICENSE')
           Copy-Item 'src-tauri/models/LICENSE.md' (Join-Path $portable 'licenses/OCR-LICENSE.md')
           [IO.File]::WriteAllText((Join-Path $portable 'portable.flag'), "portable`n")
-          $zipName = "portable-$commit.zip"
-          $zip = Join-Path $work $zipName
+          $zip = Join-Path $work 'portable.zip'
           Compress-Archive -Path (Join-Path $portable '*') -DestinationPath $zip -CompressionLevel Optimal
           $nsis = Get-Command makensis.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -First 1
           if (!$nsis) { $nsis = 'C:\Program Files (x86)\NSIS\makensis.exe' }
           if (!(Test-Path -LiteralPath $nsis)) { throw 'NSIS compiler not found' }
-          $installerName = "Installer-$commit.exe"
-          $installer = Join-Path $work $installerName
+          $installer = Join-Path $work 'Installer.exe'
           & $nsis "/DAPP_COMMIT=$commit" "/DPORTABLE_DIR=$portable" "/DOUTPUT=$installer" 'installer/Installer.nsi'
           if ($LASTEXITCODE -ne 0) { throw 'NSIS installer build failed' }
-          $installerHash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
           $head = ((git ls-remote origin refs/heads/main) -split '\s+')[0]
           if ($LASTEXITCODE -ne 0 -or $head -ne $commit) { Write-Host 'A newer source commit exists; skipping this publication.'; exit 0 }
-          $stableInstaller = Join-Path $work 'Installer.exe'
-          Copy-Item -LiteralPath $installer -Destination $stableInstaller
-          $manifest = [ordered]@{
-            commit = $commit
-            installerUrl = "$base/$installerName"
-            installerSha256 = $installerHash
-            builtAt = (Get-Date).ToUniversalTime().ToString('o')
-          }
-          $json = $manifest | ConvertTo-Json -Depth 3
-          $metadata = Join-Path $work 'update.json'
-          [IO.File]::WriteAllText($metadata, $json, [Text.UTF8Encoding]::new($false))
-          gh release create $tag $zip $installer $stableInstaller $metadata --repo $repo --target $commit --title "Build $($commit.Substring(0, 8))" --notes "Windows build from commit $commit. Download Installer.exe to install or manage the app. The installer includes the application and works offline." --latest
+          gh release create $tag $zip $installer --repo $repo --target $commit --title "Build $($commit.Substring(0, 8))" --notes "Windows build from commit $commit. Download Installer.exe to install or manage the app. The installer includes the application and works offline." --latest
           if ($LASTEXITCODE -ne 0) { throw 'Could not create GitHub Release' }

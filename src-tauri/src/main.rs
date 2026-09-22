@@ -51,21 +51,30 @@ fn data_root() -> PathBuf {
 fn build_commit() -> &'static str { option_env!("NDC_BUILD_COMMIT").unwrap_or("") }
 
 fn update_manifest() -> Result<Value, String> {
-    let mut response = ureq::get("https://github.com/Norway174/Norways-Diff-Checker/releases/latest/download/update.json")
+    let mut response = ureq::get("https://api.github.com/repos/Norway174/Norways-Diff-Checker/releases/latest")
+        .header("Accept", "application/vnd.github+json")
+        .header("User-Agent", "NorwaysDiffChecker")
         .header("Cache-Control", "no-cache")
         .call().map_err(|e| e.to_string())?;
     let mut body = String::new();
-    response.body_mut().as_reader().take(16_384).read_to_string(&mut body).map_err(|e| e.to_string())?;
-    let manifest: Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
-    let commit = string(&manifest, "commit");
-    let hash = string(&manifest, "installerSha256");
-    let url = string(&manifest, "installerUrl");
-    if commit.len() != 40 || !commit.bytes().all(|b| b.is_ascii_hexdigit())
-        || hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit())
-        || url != format!("https://github.com/Norway174/Norways-Diff-Checker/releases/download/commit-{commit}/Installer-{commit}.exe") {
-        return Err("Invalid update manifest.".into());
+    response.body_mut().as_reader().take(131_072).read_to_string(&mut body).map_err(|e| e.to_string())?;
+    let release: Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
+    let tag = string(&release, "tag_name");
+    let commit = tag.strip_prefix("commit-").ok_or("Invalid update release tag.")?;
+    if commit.len() != 40 || !commit.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err("Invalid update release tag.".into());
     }
-    Ok(manifest)
+    let installer = release["assets"].as_array().ok_or("Update release has no assets.")?
+        .iter().find(|asset| string(asset, "name") == "Installer.exe")
+        .ok_or("Update release has no installer.")?;
+    let url = string(installer, "browser_download_url");
+    let digest = string(installer, "digest");
+    let hash = digest.strip_prefix("sha256:").ok_or("Update installer has no SHA-256 digest.")?;
+    if hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit())
+        || url != format!("https://github.com/Norway174/Norways-Diff-Checker/releases/download/{tag}/Installer.exe") {
+        return Err("Invalid update installer asset.".into());
+    }
+    Ok(json!({"commit":commit,"installerUrl":url,"installerSha256":hash}))
 }
 fn check_update() -> Result<Value, String> {
     let current = build_commit();
