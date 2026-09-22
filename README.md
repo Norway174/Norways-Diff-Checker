@@ -41,47 +41,27 @@ Settings can also add **Compare this file** and **Compare this folder** to Windo
 
 ## App data
 
-The app creates `%LOCALAPPDATA%\NorwaysDiffChecker` on launch and uses it directly for `preferences.json`, `projects`, Electron user data, and `cache`.
+The default data folder is `%LOCALAPPDATA%\NorwaysDiffChecker`; the installed app lives in its `app` subfolder. The installer records the data folder in `HKCU\Software\NorwaysDiffChecker\DataPath`. On startup, the app first checks for portable settings beside its executable, then the registry, then the default folder. A portable ZIP includes `portable.flag` so a new portable copy also stores its data beside the executable. Existing preferences and projects from the Electron version remain in the default data folder.
 
-## Download
+## Build and run
 
-Download [NorwaysDiffCheckerInstaller.exe](https://github.com/Norway174/Norways-Diff-Checker/raw/refs/heads/main/installer/NorwaysDiffCheckerInstaller.exe), then run it to install, update, repair, or uninstall the app. The executable uses the same icon as the application.
-
-The installer checks for Git, Node.js, and npm together. When any are missing, it lists everything required and offers three choices:
-
-- Install the missing tools from the official [Git for Windows](https://git-scm.com/download/win) and [Node.js](https://nodejs.org/en/download) websites, then re-check.
-- Download verified portable copies into the app folder without changing the system PATH.
-- Cancel the installation.
-
-The source checkout and complete packaged Electron app are built locally under:
-
-```text
-%LOCALAPPDATA%\NorwaysDiffChecker\app
-```
-
-The installer creates a stable launcher at:
-
-```text
-%LOCALAPPDATA%\NorwaysDiffChecker\Norways Diff Checker.exe
-```
-
-Start Menu and Desktop shortcuts can be created for this launcher. Preferences and projects remain directly under `%LOCALAPPDATA%\NorwaysDiffChecker` so updates and repairs do not replace them.
-
-Updates fetch the latest `main` commit and rebuild the packaged app. If the checkout contains local modifications or commits, the installer stops and offers a normal pull, a confirmed reset to `origin/main`, or cancellation. Because this installs the latest development commit rather than a versioned release, an occasional commit may be less stable than a tagged build.
-
-Building Electron and native modules requires a sizeable download and temporary disk space. LibreOffice is not bundled with the application; users who need rendered Word or presentation pages can download or delete the optional dependency from Settings. The app shows its download and installed size there.
-
-To run the project directly for development instead, install Git and Node.js with npm, then use:
+The desktop shell and comparison engine use Rust and Tauri 2. The existing React interface keeps the same visual design. On Windows, install the Rust MSVC toolchain, Microsoft C++ Build Tools, WebView2, and Node.js with npm. From this project directory:
 
 ```powershell
-git clone https://github.com/Norway174/Norways-Diff-Checker.git
-cd "Norways Diff Checker"
 npm ci
 npm run start
 ```
 
-To rebuild the installer executable after changing its batch/PowerShell source or the app icon, run:
+To build the portable executable locally:
 
 ```powershell
-npm run build:installer
+npm run build:app
 ```
+
+`npm run build:app` writes the executable under `src-tauri/target/release`. On each push to `main`, [the Windows build workflow](.github/workflows/publish-windows.yml) packages it as a portable ZIP, builds a version-specific installer, and publishes both to the `downloads` branch of this repository. The [main installer download](https://raw.githubusercontent.com/Norway174/Norways-Diff-Checker/downloads/Installer.exe) always points to the most recently published build. The workflow must run successfully at least once before that link exists.
+
+Each installer is tied to one source commit. Running it normally offers Install, Update, Repair, or Uninstall as applicable. The installed app checks `downloads/latest.json` for a newer published build; when idle, it downloads and verifies that build's installer, runs it with `/UPDATE /S`, then relaunches. App data and optional dependencies remain outside the `app` folder during updates. The installer and uninstaller are copied into the app folder for later use.
+
+PDFium, OCR models, and LibreOffice are separate optional downloads in Settings. PDFium is needed for PDF rendering and text extraction; OCR models are needed for image and scanned-page text recognition; LibreOffice is needed for rendered Word and presentation pages. Downloaded dependencies stay in the app data folder and work offline afterward.
+
+The optional PDFium library comes from [pdfium-binaries](https://github.com/bblanchon/pdfium-binaries) and retains its license in `src-tauri/binaries/PDFIUM-LICENSE`. The optional OCR models come from [ocrs](https://github.com/robertknight/ocrs) under CC BY-SA 4.0; see `src-tauri/models/LICENSE.md`. Downloads are pinned to SHA-256 hashes in the app.

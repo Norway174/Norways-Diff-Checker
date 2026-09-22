@@ -1,5 +1,11 @@
 node_modules/
 dist/
 dist-ui/
+src-tauri/target/
+src-tauri/gen/schemas/
 out/
 *.log
+src-tauri/binaries/pdfium.dll
+src-tauri/models/*.rten
+installer/Installer-*.exe
+installer/Installer.exe

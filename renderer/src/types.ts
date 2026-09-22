@@ -60,7 +60,7 @@ export type CompareTab = {
   jobId?: string;
   needsCompare?: boolean;
   error?: string;
-  dependencyError?: 'libreoffice';
+  dependencyError?: 'libreoffice' | 'pdfium' | 'ocr';
   scans?: { at: string; count: number; changed: number; options: Partial<Options> }[];
   decisions?: Record<number, 'accept' | 'reject'>;
 };
@@ -69,6 +69,7 @@ export type Preferences = { restoreTabs: boolean; recentCompareLimit: number; re
 export type CompareEvent = { id: string; kind: 'progress' | 'result' | 'error' | 'cancelled'; value?: number; phase?: string; result?: any; error?: string; code?: string };
 export type LibreOfficeStatus = { installed: boolean; version: string; downloadBytes: number; installedBytes: number; installedBytesEstimate: number };
 export type DependencyProgress = { phase: string; receivedBytes: number; totalBytes: number; percent: number };
+export type OptionalDependency = 'pdfium' | 'ocr';
 export type AppApi = {
   minimizeWindow(): Promise<void>; toggleMaximizeWindow(): Promise<boolean>; isWindowMaximized(): Promise<boolean>; closeWindow(): Promise<void>;
   takeWindowBootstrap(): Promise<{ initialTab: CompareTab | null; primary: boolean }>;
@@ -98,9 +99,15 @@ export type AppApi = {
   installLibreOffice(): Promise<LibreOfficeStatus>;
   deleteLibreOffice(): Promise<LibreOfficeStatus>;
   onLibreOfficeProgress(callback: (progress: DependencyProgress) => void): () => void;
+  getOptionalDependencyStatus(kind: OptionalDependency): Promise<LibreOfficeStatus>;
+  installOptionalDependency(kind: OptionalDependency): Promise<LibreOfficeStatus>;
+  deleteOptionalDependency(kind: OptionalDependency): Promise<LibreOfficeStatus>;
+  onOptionalDependencyProgress(callback: (progress: DependencyProgress & { kind: OptionalDependency }) => void): () => void;
   getAppDataPath(): Promise<string>; openAppDataFolder(): Promise<void>;
   openExternalUrl(url: string): Promise<void>;
   openMaintenanceTool(): Promise<{ status: 'opened' }>;
+  checkForUpdates(): Promise<{ available: boolean; currentCommit: string; publishedCommit?: string }>;
+  startUpdate(): Promise<void>;
   writeClipboardText(text: string): Promise<void>;
   exportImageView(request: { title: string; result: any; options: Options; toClipboard: boolean; flickerRight?: boolean }): Promise<string | null>;
   exportText(request: { title: string; leftText: string; rightText: string; leftName?: string; rightName?: string; kind: 'original' | 'changed' | 'unified'; fenced?: boolean; toClipboard: boolean }): Promise<string | null>;

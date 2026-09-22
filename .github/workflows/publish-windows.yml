@@ -1,0 +1,106 @@
+name: Build and publish Windows app
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: publish-windows
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - name: Install NSIS
+        shell: pwsh
+        run: choco install nsis --no-progress -y
+      - name: Build portable app
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:NDC_BUILD_COMMIT = $env:GITHUB_SHA
+          npm ci
+          if ($LASTEXITCODE -ne 0) { throw 'npm ci failed' }
+          npm run check
+          if ($LASTEXITCODE -ne 0) { throw 'Checks failed' }
+          npm run build:portable
+          if ($LASTEXITCODE -ne 0) { throw 'Portable build failed' }
+      - name: Package and publish
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $commit = $env:GITHUB_SHA.ToLowerInvariant()
+          $repo = 'Norway174/Norways-Diff-Checker'
+          $base = "https://raw.githubusercontent.com/$repo/downloads"
+          $work = Join-Path $env:RUNNER_TEMP 'ndc-publish'
+          $portable = Join-Path $work 'portable'
+          New-Item -ItemType Directory -Path (Join-Path $portable 'licenses') -Force | Out-Null
+          Copy-Item 'src-tauri/target/release/norways-diff-checker.exe' (Join-Path $portable 'norways-diff-checker.exe')
+          Copy-Item 'src-tauri/binaries/PDFIUM-LICENSE' (Join-Path $portable 'licenses/PDFIUM-LICENSE')
+          Copy-Item 'src-tauri/models/LICENSE.md' (Join-Path $portable 'licenses/OCR-LICENSE.md')
+          [IO.File]::WriteAllText((Join-Path $portable 'portable.flag'), "portable`n")
+          $zipName = "portable-$commit.zip"
+          $zip = Join-Path $work $zipName
+          Compress-Archive -Path (Join-Path $portable '*') -DestinationPath $zip -CompressionLevel Optimal
+          $zipHash = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          $zipUrl = "$base/$zipName"
+          $nsis = Get-Command makensis.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -First 1
+          if (!$nsis) { $nsis = 'C:\Program Files (x86)\NSIS\makensis.exe' }
+          if (!(Test-Path -LiteralPath $nsis)) { throw 'NSIS compiler not found' }
+          $installerName = "Installer-$commit.exe"
+          $installer = Join-Path $work $installerName
+          & $nsis "/DAPP_COMMIT=$commit" "/DPORTABLE_SHA=$zipHash" "/DPORTABLE_URL=$zipUrl" "/DOUTPUT=$installer" 'installer/Installer.nsi'
+          if ($LASTEXITCODE -ne 0) { throw 'NSIS installer build failed' }
+          $installerHash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+          $head = ((git ls-remote origin refs/heads/main) -split '\s+')[0]
+          if ($LASTEXITCODE -ne 0 -or $head -ne $commit) { Write-Host 'A newer source commit exists; skipping this publication.'; exit 0 }
+          $publish = Join-Path $env:RUNNER_TEMP 'ndc-downloads'
+          $downloadsRef = git ls-remote --heads origin downloads
+          if ($LASTEXITCODE -ne 0) { throw 'Could not check downloads branch' }
+          if ($downloadsRef) {
+            git fetch origin downloads
+            if ($LASTEXITCODE -ne 0) { throw 'Could not fetch downloads branch' }
+            git worktree add -B downloads $publish origin/downloads
+          } else {
+            git worktree add --detach $publish HEAD
+            if ($LASTEXITCODE -ne 0) { throw 'Could not create distribution worktree' }
+            git -C $publish checkout --orphan downloads
+            git -C $publish rm -rf --ignore-unmatch . | Out-Null
+          }
+          if ($LASTEXITCODE -ne 0) { throw 'Could not prepare downloads branch' }
+          Copy-Item -LiteralPath $zip -Destination (Join-Path $publish $zipName)
+          Copy-Item -LiteralPath $installer -Destination (Join-Path $publish $installerName)
+          Copy-Item -LiteralPath $installer -Destination (Join-Path $publish 'Installer.exe') -Force
+          $manifest = [ordered]@{
+            commit = $commit
+            portableUrl = $zipUrl
+            portableSha256 = $zipHash
+            installerUrl = "$base/$installerName"
+            installerSha256 = $installerHash
+            builtAt = (Get-Date).ToUniversalTime().ToString('o')
+          }
+          $json = $manifest | ConvertTo-Json -Depth 3
+          [IO.File]::WriteAllText((Join-Path $publish 'latest.json'), $json, [Text.UTF8Encoding]::new($false))
+          git -C $publish config user.name 'github-actions[bot]'
+          git -C $publish config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git -C $publish add -A
+          git -C $publish commit -m "Publish Windows build $commit"
+          if ($LASTEXITCODE -ne 0) { throw 'Could not commit downloads' }
+          git -C $publish push origin downloads
+          if ($LASTEXITCODE -ne 0) { throw 'Could not publish downloads' }

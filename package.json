@@ -1,71 +1,29 @@
 {
   "name": "norways-diff-checker",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": "Norway174",
-  "main": "electron/main.js",
   "scripts": {
-    "start": "npm run build:ui && electron .",
+    "start": "tauri dev",
     "dev": "vite --host 127.0.0.1",
     "build:ui": "vite build",
-    "check": "tsc --noEmit && node --check electron/main.js && node --check electron/preload.js && node --check electron/external-open.js && node --check electron/shell-integration.js && node --check electron/compare-worker.js && node --check electron/exporters.js && node --check electron/export-worker.js && node --check electron/limits.js",
-    "test": "node --test tests/*.test.js",
-    "build:installer": "node scripts/build-installer.js",
-    "build:dir": "npm run build:ui && electron-builder --win dir",
-    "build:app": "npm run build:dir"
+    "check": "tsc --noEmit && cargo check --manifest-path src-tauri/Cargo.toml",
+    "build:app": "tauri build --no-bundle",
+    "build:portable": "tauri build --no-bundle"
   },
   "devDependencies": {
-    "@types/diff": "^7.0.2",
     "@types/node": "^26.6.2",
-    "@types/pdfkit": "^0.17.6",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.1.1",
-    "electron": "^44.2.0",
-    "electron-builder": "^26.15.3",
+    "@tauri-apps/api": "^2.0.0",
+    "@tauri-apps/cli": "^2.0.0",
+    "@tauri-apps/plugin-dialog": "^2.0.0",
+    "@tauri-apps/plugin-opener": "^2.0.0",
+    "@tauri-apps/plugin-clipboard-manager": "^2.0.0",
     "highlight.js": "^11.12.0",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
     "typescript": "^7.0.2",
     "vite": "^8.3.0"
-  },
-  "dependencies": {
-    "@napi-rs/canvas": "^1.0.9",
-    "@tesseract.js-data/eng": "^1.0.0",
-    "diff": "^9.0.0",
-    "docx": "^9.7.1",
-    "exifr": "^7.1.3",
-    "fast-xml-parser": "^5.11.1",
-    "heic-convert": "2.1.0",
-    "jszip": "^3.10.2",
-    "mammoth": "^1.12.3",
-    "pdfjs-dist": "^6.3.289",
-    "pdfkit": "^0.20.2",
-    "sharp": "^0.35.4",
-    "tesseract.js": "^7.0.0",
-    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
-  },
-  "build": {
-    "appId": "no.norways.diffchecker",
-    "productName": "Norways Diff Checker",
-    "directories": {
-      "output": "dist"
-    },
-    "files": [
-      "electron/**/*",
-      "dist-ui/**/*",
-      "assets/app-icon.png",
-      "package.json"
-    ],
-    "asarUnpack": [
-      "**/sharp/**/*",
-      "**/@img/**/*"
-    ],
-    "win": {
-      "target": [
-        "dir"
-      ],
-      "executableName": "Norways Diff Checker",
-      "icon": "assets/app-icon.ico"
-    }
   }
 }

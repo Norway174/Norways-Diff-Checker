@@ -1,6 +1,5 @@
 import React, { Fragment, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import * as XLSX from 'xlsx';
 import hljs from 'highlight.js/lib/core';
 import javascript from 'highlight.js/lib/languages/javascript';
 import typescript from 'highlight.js/lib/languages/typescript';
@@ -10,9 +9,17 @@ import xml from 'highlight.js/lib/languages/xml';
 import css from 'highlight.js/lib/languages/css';
 import bash from 'highlight.js/lib/languages/bash';
 import sql from 'highlight.js/lib/languages/sql';
-import type { CompareEvent, CompareTab, DependencyProgress, Input, LibreOfficeStatus, Mode, Options, Preferences } from './types';
+import type { CompareEvent, CompareTab, DependencyProgress, Input, LibreOfficeStatus, Mode, OptionalDependency, Options, Preferences } from './types';
+import './bridge';
 import './styles.css';
 declare const __APP_COMMIT__: string;
+const spreadsheetColumn = (index: number): string => {
+  let value = index + 1;
+  let label = '';
+  while (value > 0) { value--; label = String.fromCharCode(65 + value % 26) + label; value = Math.floor(value / 26); }
+  return label;
+};
+const spreadsheetAddress = (row: number, column: number): string => spreadsheetColumn(column) + (row + 1);
 for (const [name, grammar] of Object.entries({ javascript, typescript, json, python, xml, css, bash, sql })) hljs.registerLanguage(name, grammar);
 const languageFor = (input: Input | null) => {
   const ext = input?.name.split('.').at(-1)?.toLowerCase();
@@ -288,9 +295,9 @@ function Titlebar({ tabs, active, onSelect, onNew, onClose, onReorder, onReceive
   const ghostTab = dragPreview && ghostIndex !== null ? <div className="tab tab-ghost" aria-hidden="true">
     <MaterialIcon name={modes.find(mode => mode.id === dragPreview.type)?.icon || 'draft'} className="tab-symbol" /><span className="tab-name">{dragPreview.title}</span>
   </div> : null;
-  return <header className="titlebar">
-    <div className="brand">NORWAYS DIFF CHECKER</div>
-    <nav ref={tabsElement} className="tabs" role="tablist" aria-label="Comparison tabs"
+  return <header className="titlebar" data-tauri-drag-region>
+    <div className="brand" data-tauri-drag-region>NORWAYS DIFF CHECKER</div>
+    <nav ref={tabsElement} className="tabs" data-tauri-drag-region role="tablist" aria-label="Comparison tabs"
       onDragOver={event => { if (event.dataTransfer.types.includes(tabTokenType)) { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; document.body.classList.remove('detaching-tab'); updateGhost(event.clientX); } }}
       onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setGhostIndex(null); }}
       onDrop={async event => {
@@ -381,14 +388,14 @@ function Welcome({ recent, recentEnabled, onCreate, onOpenRecent, onRemoveRecent
     setOpeningMaintenance(true);
     try {
       await window.api.openMaintenanceTool();
-      onNotice('The maintenance tool was opened.', 'success');
-    } catch (error) { onNotice('Unable to open the maintenance tool: ' + humanError(error)); }
+      onNotice('Installation manager was opened.', 'success');
+    } catch (error) { onNotice('Unable to open the installation manager: ' + humanError(error)); }
     finally { setOpeningMaintenance(false); }
   };
   return <DraggableDialog title="Welcome" eyebrow="NORWAYS DIFF CHECKER" icon="difference" className="welcome" onClose={onDismiss}>
     <div className="welcome-head"><div><h1>What would you like to compare?</h1><p>Choose a comparison or drop files and folders anywhere in the window.</p></div>
       <div className="welcome-actions">
-        <button type="button" disabled={openingMaintenance} title="Open update and repair tool" onClick={() => void openMaintenanceTool()}><MaterialIcon name={openingMaintenance ? 'progress_activity' : 'build'} /><span><small>VERSION</small>{openingMaintenance ? 'Opening…' : __APP_COMMIT__}</span></button>
+        <button type="button" disabled={openingMaintenance} title="Manage installation" onClick={() => void openMaintenanceTool()}><MaterialIcon name={openingMaintenance ? 'progress_activity' : 'build'} /><span><small>VERSION</small>{openingMaintenance ? 'Opening…' : __APP_COMMIT__}</span></button>
         <button type="button" title="Open Norway174 on GitHub" onClick={() => void window.api.openExternalUrl('https://github.com/Norway174')}><MaterialIcon name="open_in_new" /><span><small>PROJECT</small>Open GitHub</span></button>
       </div>
     </div>
@@ -411,7 +418,7 @@ const settingsCategories: { id: SettingsCategory; label: string; icon: string; h
   { id: 'general', label: 'General', icon: 'tune', hint: 'Startup and workspace', keywords: 'restore previous tabs startup workspace' },
   { id: 'history', label: 'History', icon: 'history', hint: 'Recent comparisons', keywords: 'recent comparisons history limit' },
   { id: 'system', label: 'System', icon: 'computer', hint: 'Storage and Explorer', keywords: 'app data folder windows explorer context menu install uninstall' },
-  { id: 'third-party', label: 'Third Party', icon: 'extension', hint: 'Optional dependencies', keywords: 'third party optional libreoffice document dependency download delete word presentation render' }
+  { id: 'third-party', label: 'Third Party', icon: 'extension', hint: 'Optional dependencies', keywords: 'third party optional libreoffice pdfium ocr models image pdf document dependency download delete word presentation render' }
 ];
 function Settings({ prefs, appDataPath, contextMenuInstalled, contextMenuBusy, initialQuery, onPrefs, onContextMenuBusy, onContextMenuInstalled, onNotice, onClose }: {
   prefs: Preferences; appDataPath: string; contextMenuInstalled: boolean | null; contextMenuBusy: boolean;
@@ -424,6 +431,9 @@ function Settings({ prefs, appDataPath, contextMenuInstalled, contextMenuBusy, i
   const [libreOffice, setLibreOffice] = useState<LibreOfficeStatus | null>(null);
   const [dependencyProgress, setDependencyProgress] = useState<DependencyProgress | null>(null);
   const [dependencyBusy, setDependencyBusy] = useState(false);
+  const [optional, setOptional] = useState<Partial<Record<OptionalDependency, LibreOfficeStatus>>>({});
+  const [optionalProgress, setOptionalProgress] = useState<Partial<Record<OptionalDependency, DependencyProgress>>>({});
+  const [optionalBusy, setOptionalBusy] = useState<OptionalDependency | null>(null);
   const normalizedQuery = query.trim().toLowerCase();
   const visibleCategories = settingsCategories.filter(item => !normalizedQuery || (item.id !== 'all' && `${item.label} ${item.hint} ${item.keywords}`.toLowerCase().includes(normalizedQuery)));
   const selectedCategory = visibleCategories.some(item => item.id === category) ? category : visibleCategories[0]?.id;
@@ -435,7 +445,12 @@ function Settings({ prefs, appDataPath, contextMenuInstalled, contextMenuBusy, i
   };
   useEffect(() => {
     void window.api.getLibreOfficeStatus().then(setLibreOffice).catch(error => onNotice('Unable to check LibreOffice: ' + humanError(error)));
-    return window.api.onLibreOfficeProgress(setDependencyProgress);
+    for (const kind of ['pdfium', 'ocr'] as const) {
+      void window.api.getOptionalDependencyStatus(kind).then(status => setOptional(current => ({ ...current, [kind]: status }))).catch(error => onNotice(`Unable to check ${kind}: ` + humanError(error)));
+    }
+    const stopLibreOffice = window.api.onLibreOfficeProgress(setDependencyProgress);
+    const stopOptional = window.api.onOptionalDependencyProgress(progress => setOptionalProgress(current => ({ ...current, [progress.kind]: progress })));
+    return () => { stopLibreOffice(); stopOptional(); };
   }, []);
   const changeLibreOffice = async () => {
     setDependencyBusy(true);
@@ -447,6 +462,17 @@ function Settings({ prefs, appDataPath, contextMenuInstalled, contextMenuBusy, i
       onNotice(deleting ? 'LibreOffice was deleted.' : 'LibreOffice is ready to use.', 'success');
     } catch (error) { onNotice('Unable to update LibreOffice: ' + humanError(error)); }
     finally { setDependencyBusy(false); }
+  };
+  const changeOptional = async (kind: OptionalDependency) => {
+    setOptionalBusy(kind);
+    try {
+      const deleting = Boolean(optional[kind]?.installed);
+      const status = deleting ? await window.api.deleteOptionalDependency(kind) : await window.api.installOptionalDependency(kind);
+      setOptional(current => ({ ...current, [kind]: status }));
+      setOptionalProgress(current => ({ ...current, [kind]: undefined }));
+      onNotice(`${kind === 'pdfium' ? 'PDFium' : 'OCR models'} ${deleting ? 'deleted' : 'ready to use'}.`, 'success');
+    } catch (error) { onNotice(`Unable to update ${kind === 'pdfium' ? 'PDFium' : 'OCR models'}: ` + humanError(error)); }
+    finally { setOptionalBusy(null); }
   };
   return <DraggableDialog title="Settings" eyebrow="NORWAYS DIFF CHECKER" icon="settings" className="settings-modal" onClose={onClose}>
     <div className="settings-search"><MaterialIcon name="search" /><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search settings" aria-label="Search settings" />{query && <button type="button" title="Clear search" aria-label="Clear search" onClick={() => setQuery('')}><MaterialIcon name="close" /></button>}</div>
@@ -478,8 +504,9 @@ function Settings({ prefs, appDataPath, contextMenuInstalled, contextMenuBusy, i
           }}>{contextMenuInstalled === null ? 'Checking…' : contextMenuBusy ? 'Updating…' : contextMenuInstalled ? 'Uninstall' : 'Install'}</button></div></div>
         </>}
         {(selectedCategory === 'all' || selectedCategory === 'third-party') && <><div className="settings-section-head"><span className="settings-section-icon"><MaterialIcon name="extension" /></span><div><h2>Third Party</h2><p>Manage optional software used by comparison features.</p></div></div>
-          <div className="settings-group"><div className="settings-group-title">Document dependency</div><div className="settings-dependency"><div className="settings-action-row"><span><strong>LibreOffice {libreOffice?.version || ''}</strong><small>{libreOffice?.installed ? `${formatBytes(libreOffice.installedBytes)} installed. Used only to render Word and presentation pages.` : libreOffice ? `${formatBytes(libreOffice.downloadBytes)} download, about ${formatBytes(libreOffice.installedBytesEstimate)} installed. Optional for rendered Office document pages.` : 'Checking local installation...'}</small></span><button className={libreOffice?.installed ? 'danger' : 'primary'} type="button" disabled={dependencyBusy || !libreOffice} onClick={() => void changeLibreOffice()}>{dependencyBusy ? dependencyProgress?.phase || 'Working…' : libreOffice?.installed ? 'Delete' : 'Download'}</button></div>
+          <div className="settings-group"><div className="settings-group-title">Optional downloads</div><div className="settings-dependency"><div className="settings-action-row"><span><strong>LibreOffice {libreOffice?.version || ''}</strong><small>{libreOffice?.installed ? `${formatBytes(libreOffice.installedBytes)} installed. Used only to render Word and presentation pages.` : libreOffice ? `${formatBytes(libreOffice.downloadBytes)} download, about ${formatBytes(libreOffice.installedBytesEstimate)} installed. Optional for rendered Office document pages.` : 'Checking local installation...'}</small></span><button className={libreOffice?.installed ? 'danger' : 'primary'} type="button" disabled={dependencyBusy || !libreOffice} onClick={() => void changeLibreOffice()}>{dependencyBusy ? dependencyProgress?.phase || 'Working…' : libreOffice?.installed ? 'Delete' : 'Download'}</button></div>
             {dependencyBusy && <div className="dependency-progress" role="progressbar" aria-label="LibreOffice installation progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={dependencyProgress?.percent || 0}><div style={{ width: `${dependencyProgress?.percent || 0}%` }} /><span>{dependencyProgress?.phase || 'Preparing'}{dependencyProgress && ['Downloading', 'Installing'].includes(dependencyProgress.phase) ? ` · ${formatBytes(dependencyProgress.receivedBytes)} of ${formatBytes(dependencyProgress.totalBytes)}` : ''}</span></div>}
+            {(['pdfium', 'ocr'] as const).map(kind => { const status = optional[kind]; const progress = optionalProgress[kind]; const busy = optionalBusy === kind; const label = kind === 'pdfium' ? 'PDFium' : 'OCR models'; return <Fragment key={kind}><div className="settings-action-row"><span><strong>{label} {status?.version || ''}</strong><small>{status?.installed ? `${formatBytes(status.installedBytes)} installed. ${kind === 'pdfium' ? 'Used for PDF rendering and text extraction.' : 'Used to read text in images and scanned pages.'}` : status ? `${formatBytes(status.downloadBytes)} download. ${kind === 'pdfium' ? 'Required for PDF features.' : 'Required for image and scanned-page text recognition.'}` : 'Checking local installation...'}</small></span><button className={status?.installed ? 'danger' : 'primary'} type="button" disabled={!status || optionalBusy !== null} onClick={() => void changeOptional(kind)}>{busy ? progress?.phase || 'Working…' : status?.installed ? 'Delete' : 'Download'}</button></div>{busy && progress && <div className="dependency-progress" role="progressbar" aria-label={`${label} installation progress`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress.percent}><div style={{ width: `${progress.percent}%` }} /><span>{progress.phase} · {formatBytes(progress.receivedBytes)} of {formatBytes(progress.totalBytes)}</span></div>}</Fragment>; })}
           </div></div>
         </>}
       </section>
@@ -994,17 +1021,17 @@ function ExcelView({ tab, onOption }: { tab: CompareTab; onOption: (patch: Parti
   const pageCount = Math.max(1, Math.ceil(rows.length / 250));
   const visibleRows = rows.slice(Math.min(page, pageCount - 1) * 250, (Math.min(page, pageCount - 1) + 1) * 250);
   const grid = (which: 'left' | 'right') => <div className="sheet-grid"><table><tbody>
-    <tr><th></th>{cols.map(col => <th key={col}>{result.columnPositions?.[col]?.[which] == null ? '—' : XLSX.utils.encode_col(result.columnPositions[col][which])}</th>)}</tr>
+    <tr><th></th>{cols.map(col => <th key={col}>{result.columnPositions?.[col]?.[which] == null ? '—' : spreadsheetColumn(result.columnPositions[col][which])}</th>)}</tr>
     {visibleRows.map(row => <tr key={row}><th>{result.rowPositions?.length ? result.rowPositions[row]?.[which] ?? '—' : row + 1}</th>{cols.map(col => <td key={col} className={changed.has(row + ':' + col) ? which === 'left' ? 'removed' : 'added' : ''}>{result[which + 'Rows'][row]?.[col]?.display ?? ''}</td>)}</tr>)}
   </tbody></table></div>;
   const changePageCount = Math.max(1, Math.ceil(result.changed.length / 500));
   const changes = <><div className="excel-change-list"><table><thead><tr><th>Cell</th><th>Original</th><th>Changed</th><th>Formula</th></tr></thead><tbody>{result.changed.slice(changePage * 500, (changePage + 1) * 500).map((item: any, index: number) => <tr key={index}>
-    <th>{item.leftRow && item.leftColumn != null ? XLSX.utils.encode_cell({ r: item.leftRow - 1, c: item.leftColumn }) : '—'} → {item.rightRow && item.rightColumn != null ? XLSX.utils.encode_cell({ r: item.rightRow - 1, c: item.rightColumn }) : '—'}</th><td className="removed">{item.left}</td><td className="added">{item.right}</td><td>{item.leftFormula || item.rightFormula ? `${item.leftFormula || '—'} → ${item.rightFormula || '—'}` : ''}</td>
+    <th>{item.leftRow && item.leftColumn != null ? spreadsheetAddress(item.leftRow - 1, item.leftColumn) : '—'} → {item.rightRow && item.rightColumn != null ? spreadsheetAddress(item.rightRow - 1, item.rightColumn) : '—'}</th><td className="removed">{item.left}</td><td className="added">{item.right}</td><td>{item.leftFormula || item.rightFormula ? `${item.leftFormula || '—'} → ${item.rightFormula || '—'}` : ''}</td>
   </tr>)}</tbody></table></div>{changePageCount > 1 && <div className="diff-pager"><button disabled={changePage === 0} onClick={() => setChangePage(value => value - 1)}>Previous changes</button><span>{changePage + 1} of {changePageCount}</span><button disabled={changePage >= changePageCount - 1} onClick={() => setChangePage(value => value + 1)}>Next changes</button></div>}</>;
   return <div className="excel-view">
     <div className="sheet-selectors"><label>Original sheet <select value={result.leftName} onChange={event => onOption({ leftSheet: event.target.value })}>{result.leftSheets.map((name: string) => <option key={name}>{name}</option>)}</select></label>
       <label>Changed sheet <select value={result.rightName} onChange={event => onOption({ rightSheet: event.target.value })}>{result.rightSheets.map((name: string) => <option key={name}>{name}</option>)}</select></label>
-      <label>Sort by <select value={tab.options.sortColumn} onChange={event => onOption({ sortColumn: event.target.value })}><option value="">Original order</option>{Array.from({ length: Math.min(colCount, 26) }, (_, col) => <option key={col} value={XLSX.utils.encode_col(col)}>{XLSX.utils.encode_col(col)}</option>)}</select></label><span>{result.count} changed cells</span></div>
+      <label>Sort by <select value={tab.options.sortColumn} onChange={event => onOption({ sortColumn: event.target.value })}><option value="">Original order</option>{Array.from({ length: Math.min(colCount, 26) }, (_, col) => <option key={col} value={spreadsheetColumn(col)}>{spreadsheetColumn(col)}</option>)}</select></label><span>{result.count} changed cells</span></div>
     {pageCount > 1 && <div className="diff-pager"><button disabled={page === 0} onClick={() => setPage(value => value - 1)}>Previous rows</button><span>{page + 1} of {pageCount}</span><button disabled={page >= pageCount - 1} onClick={() => setPage(value => value + 1)}>Next rows</button></div>}
     {tab.options.view === 'details' ? <div className="details-grid"><pre>{JSON.stringify({ file: tab.left?.name, sheets: result.leftSheets, rows: result.leftRows.length, size: tab.left?.size }, null, 2)}</pre><pre>{JSON.stringify({ file: tab.right?.name, sheets: result.rightSheets, rows: result.rightRows.length, size: tab.right?.size }, null, 2)}</pre></div>
       : tab.options.view === 'redline' ? changes : <><div className="sheet-panes">{grid('left')}{grid('right')}</div>{tab.options.view === 'four' && changes}</>}
@@ -1116,6 +1143,14 @@ function App() {
   const [noticeTone, setNoticeTone] = useState<'error' | 'success'>('error');
   const [noticeSequence, setNoticeSequence] = useState(0);
   const [dropTarget, setDropTarget] = useState<'left' | 'right' | 'multiple' | null>(null);
+  useEffect(() => {
+    const onNativeDrop = (event: Event) => {
+      const paths = (event as CustomEvent<string[]>).detail;
+      if (paths?.length) void window.api.describeInputs(paths).then(inputs => routeInputs(inputs, active?.type)).catch(error => showNotice(humanError(error)));
+    };
+    window.addEventListener('tauri-file-drop', onNativeDrop);
+    return () => window.removeEventListener('tauri-file-drop', onNativeDrop);
+  });
   const primaryWindow = useRef(false);
   const active = tabs.find(tab => tab.id === activeId) || null;
   useEffect(() => { activeIdRef.current = activeId; }, [activeId]);
@@ -1181,7 +1216,7 @@ function App() {
           ...(scan ? { scans: [...(tab.scans || []), scan].slice(-50) } : {}) });
         if (tab.left?.path && tab.right?.path) void window.api.getSettings().then(value => { prefsRef.current = value; setPrefs(value); });
       }
-      if (event.kind === 'error') patchTab(tab.id, { busy: false, error: event.error || 'Comparison failed.', jobId: undefined, dependencyError: event.code === 'LIBREOFFICE_REQUIRED' ? 'libreoffice' : undefined });
+      if (event.kind === 'error') patchTab(tab.id, { busy: false, error: event.error || 'Comparison failed.', jobId: undefined, dependencyError: event.code === 'LIBREOFFICE_REQUIRED' ? 'libreoffice' : event.code === 'PDFIUM_REQUIRED' ? 'pdfium' : event.code === 'OCR_REQUIRED' ? 'ocr' : undefined });
       if (event.kind === 'cancelled') patchTab(tab.id, { busy: false, progress: 0, phase: '', jobId: undefined });
     });
     const stopOpen = window.api.onOpenPaths((paths, mode) => {
@@ -1191,7 +1226,10 @@ function App() {
       removeTransferredTab(id);
       if (closeWindow) void window.api.closeWindow();
     });
-    const stopPrimary = window.api.onPrimaryWindowChange(value => { primaryWindow.current = value; });
+    const stopPrimary = window.api.onPrimaryWindowChange(value => {
+      primaryWindow.current = value;
+      if (value) void window.api.setSettings({ tabs: tabsRef.current.map(persistentTab), activeTabId: activeIdRef.current || undefined });
+    });
     return () => { stopCompare(); stopOpen(); stopTransferred(); stopPrimary(); };
   }, []);
   useEffect(() => {
@@ -1201,6 +1239,26 @@ function App() {
     }, 600);
     return () => clearTimeout(timer);
   }, [tabs, activeId, prefs.restoreTabs]);
+  useEffect(() => {
+    let updating = false;
+    const check = async () => {
+      if (!primaryWindow.current || updating || tabsRef.current.some(tab => tab.busy)) return;
+      try {
+        const update = await window.api.checkForUpdates();
+        if (!update.available) return;
+        updating = true;
+        await window.api.setSettings({ tabs: tabsRef.current.map(persistentTab), activeTabId: activeIdRef.current || undefined });
+        showNotice(`Installing update ${update.publishedCommit?.slice(0, 8) || ''}…`, 'success');
+        await window.api.startUpdate();
+      } catch (error) {
+        if (updating) showNotice('Unable to install update: ' + humanError(error));
+        updating = false;
+      }
+    };
+    const first = setTimeout(() => void check(), 10_000);
+    const interval = setInterval(() => void check(), 10 * 60_000);
+    return () => { clearTimeout(first); clearInterval(interval); };
+  }, []);
   async function run(tab: CompareTab) {
     if (!tab.left || !tab.right) return;
     if (tab.jobId) await window.api.cancelCompare(tab.jobId);
@@ -1363,12 +1421,12 @@ function App() {
       else if (format === 'pdfside') await window.api.exportPdf({ title: tab.title, layout: 'side', leftText: tab.result.leftText, rightText: tab.result.rightText });
       else if (format === 'pdfredline') await window.api.exportPdf({ title: tab.title, layout: 'redline', chunks });
       else if (format === 'xlsx') {
-        const address = (row: number | null, col: number | null) => row && col != null ? XLSX.utils.encode_cell({ r: row - 1, c: col }) : '';
+        const address = (row: number | null, col: number | null) => row && col != null ? spreadsheetAddress(row - 1, col) : '';
         const rows = tab.result.changed.map((item: any) => ({ OriginalCell: address(item.leftRow, item.leftColumn), ChangedCell: address(item.rightRow, item.rightColumn), Original: item.left, Changed: item.right, OriginalFormula: item.leftFormula, ChangedFormula: item.rightFormula }));
         await window.api.exportXlsx({ title: tab.title, rows });
       } else {
         const lines = tab.type === 'folders' ? tab.result.entries.map((entry: any) => entry.status + ' ' + entry.relative)
-          : tab.type === 'excel' ? tab.result.changed.map((item: any) => `${tab.result.leftName} ${item.leftRow && item.leftColumn != null ? XLSX.utils.encode_cell({ r: item.leftRow - 1, c: item.leftColumn }) : '—'} / ${tab.result.rightName} ${item.rightRow && item.rightColumn != null ? XLSX.utils.encode_cell({ r: item.rightRow - 1, c: item.rightColumn }) : '—'}: ${item.left} → ${item.right}${item.leftFormula || item.rightFormula ? ` [${item.leftFormula} → ${item.rightFormula}]` : ''}`)
+          : tab.type === 'excel' ? tab.result.changed.map((item: any) => `${tab.result.leftName} ${item.leftRow && item.leftColumn != null ? spreadsheetAddress(item.leftRow - 1, item.leftColumn) : '—'} / ${tab.result.rightName} ${item.rightRow && item.rightColumn != null ? spreadsheetAddress(item.rightRow - 1, item.rightColumn) : '—'}: ${item.left} → ${item.right}${item.leftFormula || item.rightFormula ? ` [${item.leftFormula} → ${item.rightFormula}]` : ''}`)
           : tab.type === 'images' ? tab.result.regions.map((item: any, index: number) => `Region ${index + 1}: (${item.x}, ${item.y}) ${item.width} × ${item.height}, ${item.pixels} changed pixels`)
           : tab.result.chunks?.map((chunk: any) => chunk.type.toUpperCase() + ' ' + chunk.text) || [];
         await window.api.exportPdf({ title: tab.title, lines, ...(tab.type === 'images' ? { imageView: { result: tab.result, options: tab.options, flickerRight: flickerFrames.current.get(tab.id) } } : {}) });
@@ -1379,8 +1437,11 @@ function App() {
     try { routeInputs(await window.api.describeInputs([left, right])); }
     catch (error) { showNotice(humanError(error)); }
   }
-  function appClose() {
-    void window.api.closeWindow();
+  async function appClose() {
+    try {
+      if (primaryWindow.current) await window.api.setSettings({ tabs: tabsRef.current.map(persistentTab), activeTabId: activeId || undefined });
+      await window.api.closeWindow();
+    } catch (error) { showNotice('Unable to close the window: ' + humanError(error)); }
   }
   return <div className="app" onDragOverCapture={event => {
     if (event.dataTransfer.types.includes(tabTokenType)) {
@@ -1416,7 +1477,7 @@ function App() {
       <div className="input-row"><InputSlot side="left" input={active.left} available={active.available} type={active.type} onBrowse={() => void browse(active, 'left')} onReplace={input => setInput(active, 'left', input)} onDrop={event => void fromDrop(event)} />
             <button className="swap" title="Swap sides" aria-label="Swap sides" onClick={() => { if (active.result?.assetId) void window.api.releaseCompareAssets(active.result.assetId); const next = { ...active, left: active.right, right: active.left, result: null, decisions: undefined }; patchTab(active.id, next); void run(next); }}><MaterialIcon name="swap_horiz" /></button>
         <InputSlot side="right" input={active.right} available={active.available} type={active.type} onBrowse={() => void browse(active, 'right')} onReplace={input => setInput(active, 'right', input)} onDrop={event => void fromDrop(event)} /></div>
-      {active.error && <div className="error-banner"><span>{active.error}</span>{active.dependencyError === 'libreoffice' && <button type="button" onClick={() => { setSettingsQuery('LibreOffice'); setSettingsOpen(true); }}>Open Settings</button>}</div>}
+      {active.error && <div className="error-banner"><span>{active.error}</span>{active.dependencyError && <button type="button" onClick={() => { setSettingsQuery(active.dependencyError === 'ocr' ? 'OCR' : active.dependencyError === 'pdfium' ? 'PDFium' : 'LibreOffice'); setSettingsOpen(true); }}>Open Settings</button>}</div>}
       {active.busy && <div className="progress"><div style={{ width: active.progress + '%' }} /></div>}
       <div className="content-layout"><div className="content-main">
         {active.type === 'text' && <TextView tab={active} onText={(side, text) => { const input = { ...(active[side] || { id: crypto.randomUUID(), name: side === 'left' ? 'Original text' : 'Changed text', types: ['text' as Mode] }), text }; setInput(active, side, input); }} onOption={patch => changeOptions(active, patch)} />}
