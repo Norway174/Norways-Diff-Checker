@@ -43,11 +43,14 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Portable build failed' }
       - name: Package and publish
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = 'Stop'
           $commit = $env:GITHUB_SHA.ToLowerInvariant()
           $repo = 'Norway174/Norways-Diff-Checker'
-          $base = "https://raw.githubusercontent.com/$repo/downloads"
+          $tag = "commit-$commit"
+          $base = "https://github.com/$repo/releases/download/$tag"
           $work = Join-Path $env:RUNNER_TEMP 'ndc-publish'
           $portable = Join-Path $work 'portable'
           New-Item -ItemType Directory -Path (Join-Path $portable 'licenses') -Force | Out-Null
@@ -70,6 +73,10 @@ jobs:
           $installerHash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
           $head = ((git ls-remote origin refs/heads/main) -split '\s+')[0]
           if ($LASTEXITCODE -ne 0 -or $head -ne $commit) { Write-Host 'A newer source commit exists; skipping this publication.'; exit 0 }
+          $stableInstaller = Join-Path $work 'Installer.exe'
+          Copy-Item -LiteralPath $installer -Destination $stableInstaller
+          gh release create $tag $zip $installer $stableInstaller --repo $repo --target $commit --title "Build $($commit.Substring(0, 8))" --notes "Windows build from commit $commit. Download Installer.exe to install or manage the app." --latest
+          if ($LASTEXITCODE -ne 0) { throw 'Could not create GitHub Release' }
           $publish = Join-Path $env:RUNNER_TEMP 'ndc-downloads'
           $downloadsRef = git ls-remote --heads origin downloads
           if ($LASTEXITCODE -ne 0) { throw 'Could not check downloads branch' }

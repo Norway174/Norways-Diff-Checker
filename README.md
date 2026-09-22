@@ -58,7 +58,7 @@ To build the portable executable locally:
 npm run build:app
 ```
 
-`npm run build:app` writes the executable under `src-tauri/target/release`. On each push to `main`, [the Windows build workflow](.github/workflows/publish-windows.yml) packages it as a portable ZIP, builds a version-specific installer, and publishes both to the `downloads` branch of this repository. The [main installer download](https://raw.githubusercontent.com/Norway174/Norways-Diff-Checker/downloads/Installer.exe) always points to the most recently published build. The workflow must run successfully at least once before that link exists.
+`npm run build:app` writes the executable under `src-tauri/target/release`. On each push to `main`, [the Windows build workflow](.github/workflows/publish-windows.yml) packages it as a portable ZIP, builds a version-specific installer, and publishes both in a [GitHub Release](https://github.com/Norway174/Norways-Diff-Checker/releases). The [main installer download](https://github.com/Norway174/Norways-Diff-Checker/releases/latest/download/Installer.exe) points to the latest release. The workflow also updates the `downloads` branch with the update manifest.
 
 Each installer is tied to one source commit. Running it normally offers Install, Update, Repair, or Uninstall as applicable. The installed app checks `downloads/latest.json` for a newer published build; when idle, it downloads and verifies that build's installer, runs it with `/UPDATE /S`, then relaunches. App data and optional dependencies remain outside the `app` folder during updates. The installer and uninstaller are copied into the app folder for later use.
 

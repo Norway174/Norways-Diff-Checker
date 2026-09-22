@@ -62,7 +62,7 @@ fn update_manifest() -> Result<Value, String> {
     let url = string(&manifest, "installerUrl");
     if commit.len() != 40 || !commit.bytes().all(|b| b.is_ascii_hexdigit())
         || hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit())
-        || url != format!("https://raw.githubusercontent.com/Norway174/Norways-Diff-Checker/downloads/Installer-{commit}.exe") {
+        || url != format!("https://github.com/Norway174/Norways-Diff-Checker/releases/download/commit-{commit}/Installer-{commit}.exe") {
         return Err("Invalid update manifest.".into());
     }
     Ok(manifest)

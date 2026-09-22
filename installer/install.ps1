@@ -11,7 +11,7 @@ $ProgressPreference = 'SilentlyContinue'
 if ($ExpectedCommit -notmatch '^[0-9a-fA-F]{40}$' -or $ExpectedHash -notmatch '^[0-9a-fA-F]{64}$') {
     throw 'The installer contains invalid build metadata.'
 }
-$expectedUrl = "https://raw.githubusercontent.com/Norway174/Norways-Diff-Checker/downloads/portable-$ExpectedCommit.zip"
+$expectedUrl = "https://github.com/Norway174/Norways-Diff-Checker/releases/download/commit-$ExpectedCommit/portable-$ExpectedCommit.zip"
 if ($PortableUrl -cne $expectedUrl) { throw 'The portable download URL is invalid.' }
 $stage = Join-Path $env:TEMP ("NorwaysDiffChecker-" + [guid]::NewGuid().ToString('N'))
 $zip = Join-Path $stage 'portable.zip'
