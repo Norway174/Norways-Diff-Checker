@@ -30,7 +30,7 @@ $base = "https://api.github.com/repos/$Repository/releases"
 $alreadyReleased = $false
 $page = 1
 do {
-    $batch = @(Invoke-RestMethod -Uri "$base`?per_page=100&page=$page" -Headers $headers)
+    $batch = Invoke-RestMethod -Uri "$base`?per_page=100&page=$page" -Headers $headers
     foreach ($release in $batch) {
         $releaseTag = [string]$release.tag_name
         if ($releaseTag -ceq $tag -or [string]$release.name -ceq $version) {
