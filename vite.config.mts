@@ -1,11 +1,12 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
+import { readFileSync } from 'node:fs';
 
 export default defineConfig({
   plugins: [react()],
   root: 'renderer',
   base: './',
-  define: { __APP_COMMIT__: JSON.stringify(process.env.NDC_BUILD_COMMIT?.slice(0, 8) || 'Development') },
+  define: { __APP_VERSION__: JSON.stringify(JSON.parse(readFileSync('package.json', 'utf8')).version) },
   server: { host: '127.0.0.1', port: 5173, strictPort: true, watch: { ignored: ['**/src-tauri/**'] } },
   build: {
     outDir: '../dist-ui',

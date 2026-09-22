@@ -169,6 +169,13 @@ body.detaching-tab .app { cursor: alias; }
 .welcome-actions button > .material-symbols-outlined { color: #83c7f1; font-size: 20px; }
 .welcome-actions button > span { display: grid; gap: 1px; color: #e5e5e7; font-size: 12px; font-weight: 600; white-space: nowrap; }
 .welcome-actions button small { color: #85858a; font-size: 8px; font-weight: 700; letter-spacing: .1em; }
+.update-dialog { width: min(480px, calc(100vw - 32px)); }
+.update-dialog-body { padding: 20px 24px 10px; }
+.update-dialog-body h2 { margin: 0 0 8px; font-size: 20px; }
+.update-dialog-body p, .update-dialog-note { color: #aaa; font-size: 12px; line-height: 1.5; }
+.update-dialog-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 6px 24px 10px; }
+.update-dialog-actions button { min-height: 38px; }
+.update-dialog-note { margin: 0; padding: 0 24px 24px; }
 .welcome-columns { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 24px; margin-top: 24px; }
 .welcome-columns > div { min-width: 0; }
 .welcome-columns.recent-disabled { display: block; }

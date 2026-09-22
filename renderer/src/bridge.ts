@@ -84,7 +84,9 @@ const api: AppApi = {
   openExternalUrl: async url => { if (!url.startsWith('https://')) throw new Error('Only secure web links can be opened.'); await openUrl(url); },
   openMaintenanceTool: () => call('open_maintenance'),
   checkForUpdates: () => invoke('check_update_async'),
-  startUpdate: () => invoke('start_update_async'),
+  startUpdate: expectedVersion => invoke('start_update_async', { expectedVersion }),
+  scheduleUpdateOnClose: expectedVersion => invoke('schedule_update_on_close_async', { expectedVersion }),
+  cancelScheduledUpdate: () => invoke('cancel_scheduled_update'),
   writeClipboardText: writeText,
   exportImageView: async request => {
     if (request.toClipboard) {

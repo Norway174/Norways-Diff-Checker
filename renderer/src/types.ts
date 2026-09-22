@@ -65,7 +65,7 @@ export type CompareTab = {
   decisions?: Record<number, 'accept' | 'reject'>;
 };
 export type RecentCompare = { type: Mode; left: string; right: string };
-export type Preferences = { restoreTabs: boolean; recentCompareLimit: number; recentCompares: RecentCompare[]; lastImageView?: string; tabs?: CompareTab[]; activeTabId?: string };
+export type Preferences = { restoreTabs: boolean; recentCompareLimit: number; recentCompares: RecentCompare[]; lastImageView?: string; tabs?: CompareTab[]; activeTabId?: string; skippedUpdateVersion?: string };
 export type CompareEvent = { id: string; kind: 'progress' | 'result' | 'error' | 'cancelled'; value?: number; phase?: string; result?: any; error?: string; code?: string };
 export type LibreOfficeStatus = { installed: boolean; version: string; downloadBytes: number; installedBytes: number; installedBytesEstimate: number };
 export type DependencyProgress = { phase: string; receivedBytes: number; totalBytes: number; percent: number };
@@ -106,8 +106,10 @@ export type AppApi = {
   getAppDataPath(): Promise<string>; openAppDataFolder(): Promise<void>;
   openExternalUrl(url: string): Promise<void>;
   openMaintenanceTool(): Promise<{ status: 'opened' }>;
-  checkForUpdates(): Promise<{ available: boolean; currentCommit: string; publishedCommit?: string }>;
-  startUpdate(): Promise<void>;
+  checkForUpdates(): Promise<{ available: boolean; currentVersion: string; publishedVersion?: string }>;
+  startUpdate(expectedVersion: string): Promise<void>;
+  scheduleUpdateOnClose(expectedVersion: string): Promise<void>;
+  cancelScheduledUpdate(): Promise<void>;
   writeClipboardText(text: string): Promise<void>;
   exportImageView(request: { title: string; result: any; options: Options; toClipboard: boolean; flickerRight?: boolean }): Promise<string | null>;
   exportText(request: { title: string; leftText: string; rightText: string; leftName?: string; rightName?: string; kind: 'original' | 'changed' | 'unified'; fenced?: boolean; toClipboard: boolean }): Promise<string | null>;

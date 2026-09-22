@@ -25,6 +25,7 @@ struct State {
     bootstrap: Mutex<HashMap<String, Value>>,
     primary: Mutex<String>,
     active_tabs: Mutex<HashMap<String, Value>>,
+    scheduled_update: Mutex<Option<String>>,
 }
 
 fn data_root() -> PathBuf {
@@ -49,6 +50,10 @@ fn data_root() -> PathBuf {
 }
 
 fn build_commit() -> &'static str { option_env!("NDC_BUILD_COMMIT").unwrap_or("") }
+fn build_version() -> String {
+    serde_json::from_str::<Value>(include_str!("../../package.json"))
+        .ok().map(|v| string(&v, "version").to_string()).unwrap_or_default()
+}
 
 fn update_manifest() -> Result<Value, String> {
     let mut response = ureq::get("https://api.github.com/repos/Norway174/Norways-Diff-Checker/releases/latest")
@@ -60,8 +65,11 @@ fn update_manifest() -> Result<Value, String> {
     response.body_mut().as_reader().take(131_072).read_to_string(&mut body).map_err(|e| e.to_string())?;
     let release: Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
     let tag = string(&release, "tag_name");
+    let version = string(&release, "name");
+    let encoded_tag = format!("x-{}", version.as_bytes().iter().map(|byte| format!("{byte:02x}")).collect::<String>());
     let commit = string(&release, "target_commitish");
-    if tag.is_empty() || tag.len() > 255 || !tag.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+    if version.is_empty() || version.len() > 255 || (tag != format!("v{version}") && tag != encoded_tag)
+        || tag.len() > 600 || !tag.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
         || commit.len() != 40 || !commit.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err("Invalid update release metadata.".into());
     }
@@ -75,21 +83,20 @@ fn update_manifest() -> Result<Value, String> {
         || url != format!("https://github.com/Norway174/Norways-Diff-Checker/releases/download/{tag}/Installer.exe") {
         return Err("Invalid update installer asset.".into());
     }
-    Ok(json!({"commit":commit,"installerUrl":url,"installerSha256":hash}))
+    Ok(json!({"version":version,"commit":commit,"installerUrl":url,"installerSha256":hash}))
 }
 fn check_update() -> Result<Value, String> {
     let current = build_commit();
+    let version = build_version();
     if current.len() != 40 || std::env::current_exe().ok().and_then(|p| p.parent().map(|x| x.join("portable.flag").exists())).unwrap_or(false) {
-        return Ok(json!({"available":false,"currentCommit":current}));
+        return Ok(json!({"available":false,"currentVersion":version}));
     }
     let manifest = update_manifest()?;
-    let published = string(&manifest, "commit");
-    Ok(json!({"available":!current.eq_ignore_ascii_case(published),"currentCommit":current,"publishedCommit":published}))
+    let published = string(&manifest, "version");
+    Ok(json!({"available":version != published,"currentVersion":version,"publishedVersion":published}))
 }
-fn start_update(root: &Path, app: tauri::AppHandle) -> Result<(), String> {
-    let manifest = update_manifest()?;
+fn download_update(root: &Path, manifest: &Value) -> Result<PathBuf, String> {
     let commit = string(&manifest, "commit");
-    if build_commit().eq_ignore_ascii_case(commit) { return Ok(()); }
     let cache = root.join("cache/updates");
     fs::create_dir_all(&cache).map_err(|e| e.to_string())?;
     let installer = cache.join(format!("Installer-{commit}.exe"));
@@ -120,8 +127,28 @@ fn start_update(root: &Path, app: tauri::AppHandle) -> Result<(), String> {
         if result.is_err() { let _ = fs::remove_file(&partial); }
         result?;
     }
+    Ok(installer)
+}
+fn start_update(root: &Path, app: tauri::AppHandle, expected_version: &str) -> Result<(), String> {
+    let manifest = update_manifest()?;
+    if string(&manifest, "version") != expected_version { return Err("The available update changed. Check again.".into()); }
+    if build_version() == expected_version { return Ok(()); }
+    let installer = download_update(root, &manifest)?;
     Command::new(installer).args(["/UPDATE", "/S"]).creation_flags_hidden().spawn().map_err(|e| e.to_string())?;
     std::thread::spawn(move || { std::thread::sleep(std::time::Duration::from_millis(500)); app.exit(0); });
+    Ok(())
+}
+fn update_on_close(expected_commit: &str) -> Result<(), String> {
+    if expected_commit.len() != 40 || !expected_commit.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err("Invalid scheduled update.".into());
+    }
+    let manifest = update_manifest()?;
+    if !string(&manifest, "commit").eq_ignore_ascii_case(expected_commit) {
+        return Err("The scheduled update changed.".into());
+    }
+    let installer = download_update(&data_root(), &manifest)?;
+    Command::new(installer).args(["/UPDATE", "/S", "/NOLAUNCH"])
+        .creation_flags_hidden().spawn().map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -151,6 +178,9 @@ fn clean_settings(raw: Value) -> Value {
                 options.remove("password");
             }
         }
+    }
+    if let Some(version) = raw.get("skippedUpdateVersion").and_then(Value::as_str) {
+        if version.len() <= 255 { value["skippedUpdateVersion"] = json!(version); }
     }
     value
 }
@@ -552,7 +582,7 @@ fn native_call(
             let _guard = state.settings_lock.lock().unwrap();
             let mut current = get_settings(&state);
             let patch = payload.as_object().ok_or("Invalid settings update")?;
-            for key in ["restoreTabs","recentCompareLimit","recentCompares","lastImageView","tabs","activeTabId"] {
+            for key in ["restoreTabs","recentCompareLimit","recentCompares","lastImageView","tabs","activeTabId","skippedUpdateVersion"] {
                 if let Some(value) = patch.get(key) { current[key] = value.clone(); }
             }
             save_settings(&state, current)
@@ -652,12 +682,29 @@ async fn check_update_async() -> Result<Value, String> {
 }
 
 #[tauri::command]
-async fn start_update_async(app: tauri::AppHandle, state: tauri::State<'_, State>) -> Result<(), String> {
+async fn start_update_async(app: tauri::AppHandle, state: tauri::State<'_, State>, expected_version: String) -> Result<(), String> {
     if !state.jobs.lock().map_err(|e| e.to_string())?.is_empty() {
         return Err("A comparison is still running. The update will be retried later.".into());
     }
     let root = state.root.clone();
-    tauri::async_runtime::spawn_blocking(move || start_update(&root, app)).await.map_err(|e| e.to_string())?
+    *state.scheduled_update.lock().map_err(|e| e.to_string())? = None;
+    tauri::async_runtime::spawn_blocking(move || start_update(&root, app, &expected_version)).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn schedule_update_on_close_async(state: tauri::State<'_, State>, expected_version: String) -> Result<(), String> {
+    let manifest = tauri::async_runtime::spawn_blocking(update_manifest).await.map_err(|e| e.to_string())??;
+    if string(&manifest, "version") != expected_version || build_version() == expected_version {
+        return Err("The available update changed. Check again.".into());
+    }
+    *state.scheduled_update.lock().map_err(|e| e.to_string())? = Some(string(&manifest, "commit").to_string());
+    Ok(())
+}
+
+#[tauri::command]
+fn cancel_scheduled_update(state: tauri::State<'_, State>) -> Result<(), String> {
+    *state.scheduled_update.lock().map_err(|e| e.to_string())? = None;
+    Ok(())
 }
 
 #[tauri::command]
@@ -761,6 +808,15 @@ fn start_compare(
 }
 
 fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("--update-on-close") {
+        let result = args.get(2).ok_or_else(|| "Missing scheduled update commit.".to_string()).and_then(|commit| update_on_close(commit));
+        if let Err(error) = result {
+            let _ = fs::create_dir_all(data_root().join("cache/updates"));
+            let _ = fs::write(data_root().join("cache/updates/last-error.txt"), error);
+        }
+        return;
+    }
     let root = data_root();
     let _ = fs::create_dir_all(root.join("cache/comparison-assets"));
     let asset_root = root.join("cache/comparison-assets");
@@ -845,6 +901,7 @@ fn main() {
             bootstrap: Mutex::new(HashMap::new()),
             primary: Mutex::new("main".into()),
             active_tabs: Mutex::new(HashMap::new()),
+            scheduled_update: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
             native_call,
@@ -855,6 +912,8 @@ fn main() {
             delete_optional_async,
             check_update_async,
             start_update_async,
+            schedule_update_on_close_async,
+            cancel_scheduled_update,
             export_async
         ])
         .on_window_event(|window, event| {
@@ -864,6 +923,14 @@ fn main() {
             let app = window.app_handle();
             let state = app.state::<State>();
             state.active_tabs.lock().unwrap().remove(window.label());
+            let remaining = app.webview_windows().into_keys().any(|label| label != window.label());
+            if !remaining {
+                if let Some(commit) = state.scheduled_update.lock().unwrap().take() {
+                    if let Ok(exe) = std::env::current_exe() {
+                        let _ = Command::new(exe).args(["--update-on-close", &commit]).creation_flags_hidden().spawn();
+                    }
+                }
+            }
             if *state.primary.lock().unwrap() != window.label() {
                 return;
             }

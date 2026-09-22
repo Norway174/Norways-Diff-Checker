@@ -7,6 +7,9 @@ Unicode true
 !ifndef APP_COMMIT
   !error "APP_COMMIT is required"
 !endif
+!ifndef APP_VERSION
+  !define APP_VERSION "${APP_COMMIT}"
+!endif
 !ifndef PORTABLE_DIR
   !error "PORTABLE_DIR is required"
 !endif
@@ -25,6 +28,7 @@ ShowInstDetails show
 !define MUI_UNICON "..\assets\app-icon.ico"
 
 Var Action
+Var NoLaunch
 Var RadioUpdate
 Var RadioRepair
 Var RadioUninstall
@@ -48,7 +52,13 @@ Page custom MaintenancePage MaintenanceLeave
 
 Function .onInit
   StrCpy $Action "install"
+  StrCpy $NoLaunch "0"
   ${GetParameters} $0
+  ClearErrors
+  ${GetOptions} $0 "/NOLAUNCH" $1
+  ${IfNot} ${Errors}
+    StrCpy $NoLaunch "1"
+  ${EndIf}
   ClearErrors
   ${GetOptions} $0 "/UPDATE" $1
   ${IfNot} ${Errors}
@@ -88,7 +98,7 @@ Function MaintenancePage
   ${If} $0 == error
     Abort
   ${EndIf}
-  ${NSD_CreateLabel} 0 0 100% 34u "Norways Diff Checker is installed. Choose what to do with this installer (version ${APP_COMMIT})."
+  ${NSD_CreateLabel} 0 0 100% 34u "Norways Diff Checker is installed. Choose what to do with this installer (version ${APP_VERSION})."
   Pop $0
   ${NSD_CreateRadioButton} 0 42u 100% 18u "Update to this version"
   Pop $RadioUpdate
@@ -143,7 +153,7 @@ Section "Install" MainSection
   WriteRegStr HKCU "Software\NorwaysDiffChecker" "DataPath" "$LOCALAPPDATA\NorwaysDiffChecker"
   WriteRegStr HKCU "Software\NorwaysDiffChecker" "InstalledCommit" "${APP_COMMIT}"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\NorwaysDiffChecker" "DisplayName" "Norways Diff Checker"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\NorwaysDiffChecker" "DisplayVersion" "${APP_COMMIT}"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\NorwaysDiffChecker" "DisplayVersion" "${APP_VERSION}"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\NorwaysDiffChecker" "UninstallString" '"$INSTDIR\Uninstall.exe"'
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\NorwaysDiffChecker" "InstallLocation" "$INSTDIR"
   WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\NorwaysDiffChecker" "NoModify" 1
@@ -152,7 +162,9 @@ Section "Install" MainSection
   IfSilent SilentUpdate InstallDone
   SilentUpdate:
     ${If} $Action == "update"
-      Exec '"$INSTDIR\norways-diff-checker.exe"'
+      ${If} $NoLaunch != "1"
+        Exec '"$INSTDIR\norways-diff-checker.exe"'
+      ${EndIf}
     ${EndIf}
   InstallDone:
 SectionEnd

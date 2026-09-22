@@ -12,7 +12,7 @@ import sql from 'highlight.js/lib/languages/sql';
 import type { CompareEvent, CompareTab, DependencyProgress, Input, LibreOfficeStatus, Mode, OptionalDependency, Options, Preferences } from './types';
 import './bridge';
 import './styles.css';
-declare const __APP_COMMIT__: string;
+declare const __APP_VERSION__: string;
 const spreadsheetColumn = (index: number): string => {
   let value = index + 1;
   let label = '';
@@ -25,6 +25,7 @@ const languageFor = (input: Input | null) => {
   const ext = input?.name.split('.').at(-1)?.toLowerCase();
   return ({ js: 'javascript', jsx: 'javascript', ts: 'typescript', tsx: 'typescript', json: 'json', py: 'python', xml: 'xml', html: 'xml', css: 'css', sh: 'bash', sql: 'sql' } as Record<string, string>)[ext || ''];
 };
+type AvailableUpdate = { currentVersion: string; publishedVersion: string };
 
 const modes: { id: Mode; label: string; icon: string; hint: string }[] = [
   { id: 'text', label: 'Text', icon: 'text_fields', hint: 'Words, code and logs' },
@@ -378,24 +379,15 @@ function Titlebar({ tabs, active, onSelect, onNew, onClose, onReorder, onReceive
     </div>
   </header>;
 }
-function Welcome({ recent, recentEnabled, onCreate, onOpenRecent, onRemoveRecent, onNotice, onDismiss }: {
+function Welcome({ recent, recentEnabled, onCreate, onOpenRecent, onRemoveRecent, onCheckUpdates, onDismiss }: {
   recent: Preferences['recentCompares']; recentEnabled: boolean; onCreate: (type: Mode) => void; onOpenRecent: (item: Preferences['recentCompares'][number]) => void;
   onRemoveRecent: (item: Preferences['recentCompares'][number]) => void;
-  onNotice: (message: string, tone?: 'error' | 'success') => void; onDismiss: () => void;
+  onCheckUpdates: () => void; onDismiss: () => void;
 }) {
-  const [openingMaintenance, setOpeningMaintenance] = useState(false);
-  const openMaintenanceTool = async () => {
-    setOpeningMaintenance(true);
-    try {
-      await window.api.openMaintenanceTool();
-      onNotice('Installation manager was opened.', 'success');
-    } catch (error) { onNotice('Unable to open the installation manager: ' + humanError(error)); }
-    finally { setOpeningMaintenance(false); }
-  };
   return <DraggableDialog title="Welcome" eyebrow="NORWAYS DIFF CHECKER" icon="difference" className="welcome" onClose={onDismiss}>
     <div className="welcome-head"><div><h1>What would you like to compare?</h1><p>Choose a comparison or drop files and folders anywhere in the window.</p></div>
       <div className="welcome-actions">
-        <button type="button" disabled={openingMaintenance} title="Manage installation" onClick={() => void openMaintenanceTool()}><MaterialIcon name={openingMaintenance ? 'progress_activity' : 'build'} /><span><small>VERSION</small>{openingMaintenance ? 'Opening…' : __APP_COMMIT__}</span></button>
+        <button type="button" title="Check for updates" onClick={onCheckUpdates}><MaterialIcon name="update" /><span><small>VERSION</small>{__APP_VERSION__}</span></button>
         <button type="button" title="Open Norway174 on GitHub" onClick={() => void window.api.openExternalUrl('https://github.com/Norway174')}><MaterialIcon name="open_in_new" /><span><small>PROJECT</small>Open GitHub</span></button>
       </div>
     </div>
@@ -1131,6 +1123,9 @@ function App() {
   const [activeId, setActiveId] = useState<string | null>(null);
   const activeIdRef = useRef<string | null>(null);
   const [welcome, setWelcome] = useState(false);
+  const [updatePrompt, setUpdatePrompt] = useState<AvailableUpdate | null>(null);
+  const [updateBusy, setUpdateBusy] = useState(false);
+  const checkingUpdate = useRef(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsQuery, setSettingsQuery] = useState('');
   const [prefs, setPrefs] = useState<Preferences>({ restoreTabs: true, recentCompareLimit: 10, recentCompares: [] });
@@ -1205,6 +1200,7 @@ function App() {
           catch (error) { showNotice(humanError(error)); }
         }
       } else if (!bootstrap.initialTab && (!bootstrap.primary || !value.restoreTabs || !value.tabs?.length)) setWelcome(true);
+      if (bootstrap.primary) void checkForUpdates(false);
     });
     const stopCompare = window.api.onCompareEvent((event: CompareEvent) => {
       const tab = tabsRef.current.find(item => item.jobId === event.id);
@@ -1239,26 +1235,45 @@ function App() {
     }, 600);
     return () => clearTimeout(timer);
   }, [tabs, activeId, prefs.restoreTabs]);
-  useEffect(() => {
-    let updating = false;
-    const check = async () => {
-      if (!primaryWindow.current || updating || tabsRef.current.some(tab => tab.busy)) return;
-      try {
-        const update = await window.api.checkForUpdates();
-        if (!update.available) return;
-        updating = true;
+  async function checkForUpdates(manual: boolean) {
+    if (checkingUpdate.current) return;
+    checkingUpdate.current = true;
+    try {
+      const update = await window.api.checkForUpdates();
+      if (update.available && update.publishedVersion) {
+        if (manual || prefsRef.current.skippedUpdateVersion !== update.publishedVersion) {
+          setUpdatePrompt({ currentVersion: update.currentVersion, publishedVersion: update.publishedVersion });
+        } else if (manual) showNotice('This version was skipped.', 'success');
+      } else if (manual) showNotice('You’re up to date.', 'success');
+    } catch (error) {
+      if (manual) showNotice('Unable to check for updates: ' + humanError(error));
+    } finally { checkingUpdate.current = false; }
+  }
+  async function chooseUpdate(choice: 'now' | 'close' | 'ignore' | 'skip') {
+    if (!updatePrompt || updateBusy) return;
+    const version = updatePrompt.publishedVersion;
+    setUpdateBusy(true);
+    try {
+      if (choice === 'ignore') {
+        await window.api.cancelScheduledUpdate();
+        setUpdatePrompt(null);
+      } else if (choice === 'skip') {
+        await window.api.cancelScheduledUpdate();
+        const value = await window.api.setSettings({ skippedUpdateVersion: version });
+        prefsRef.current = value; setPrefs(value); setUpdatePrompt(null);
+      } else if (choice === 'close') {
+        await window.api.scheduleUpdateOnClose(version);
+        setUpdatePrompt(null);
+        showNotice(`Version ${version} will install after you close the app.`, 'success');
+      } else {
+        if (tabsRef.current.some(tab => tab.busy)) throw new Error('Wait for active comparisons to finish before updating.');
         await window.api.setSettings({ tabs: tabsRef.current.map(persistentTab), activeTabId: activeIdRef.current || undefined });
-        showNotice(`Installing update ${update.publishedCommit?.slice(0, 8) || ''}…`, 'success');
-        await window.api.startUpdate();
-      } catch (error) {
-        if (updating) showNotice('Unable to install update: ' + humanError(error));
-        updating = false;
+        showNotice(`Downloading version ${version}…`, 'success');
+        await window.api.startUpdate(version);
       }
-    };
-    const first = setTimeout(() => void check(), 10_000);
-    const interval = setInterval(() => void check(), 10 * 60_000);
-    return () => { clearTimeout(first); clearInterval(interval); };
-  }, []);
+    } catch (error) { showNotice('Unable to update: ' + humanError(error)); }
+    finally { setUpdateBusy(false); }
+  }
   async function run(tab: CompareTab) {
     if (!tab.left || !tab.right) return;
     if (tab.jobId) await window.api.cancelCompare(tab.jobId);
@@ -1487,7 +1502,16 @@ function App() {
         {active.type === 'folders' && <FolderView tab={active} onOpenPair={(left, right) => void openFolderPair(left, right)} />}
       </div><OptionsPanel tab={active} change={patch => changeOptions(active, patch)} flickerProgressRef={flickerProgressRef} flickerPaused={pausedFlickerTabs.has(active.id)} onToggleFlickerPaused={() => setPausedFlickerTabs(current => { const next = new Set(current); if (next.has(active.id)) next.delete(active.id); else next.add(active.id); return next; })} onManualFlick={() => setManualFlickToken(value => value + 1)} transitionRunning={runningTransitionTabs.has(active.id)} onToggleTransition={() => { const starting = !runningTransitionTabs.has(active.id); if (starting) changeOptions(active, { opacity: 0 }); setRunningTransitionTabs(current => { const next = new Set(current); if (starting) next.add(active.id); else next.delete(active.id); return next; }); }} /></div>
     </main> : <main className="empty-workspace"><MaterialIcon name="difference" className="empty-symbol" /><h2>Ready to compare</h2><p>Drop files or folders here, or start a new comparison.</p><button className="primary" onClick={() => setWelcome(true)}>New comparison</button></main>}
-    {welcome && <Welcome recent={prefs.recentCompares || []} recentEnabled={prefs.recentCompareLimit > 0} onCreate={type => addTab(type)} onOpenRecent={item => void openRecent(item)} onRemoveRecent={item => void removeRecent(item)} onNotice={showNotice} onDismiss={() => setWelcome(false)} />}
+    {welcome && !updatePrompt && <Welcome recent={prefs.recentCompares || []} recentEnabled={prefs.recentCompareLimit > 0} onCreate={type => addTab(type)} onOpenRecent={item => void openRecent(item)} onRemoveRecent={item => void removeRecent(item)} onCheckUpdates={() => void checkForUpdates(true)} onDismiss={() => setWelcome(false)} />}
+    {updatePrompt && <DraggableDialog title="Update available" eyebrow="NORWAYS DIFF CHECKER" icon="update" className="update-dialog" onClose={() => { if (!updateBusy) setUpdatePrompt(null); }}>
+      <div className="update-dialog-body"><h2>Version {updatePrompt.publishedVersion} is available</h2><p>You have version {updatePrompt.currentVersion}. Choose when to install the update.</p></div>
+      <div className="update-dialog-actions">
+        <button type="button" className="primary" disabled={updateBusy} onClick={() => void chooseUpdate('now')}>Update Now</button>
+        <button type="button" disabled={updateBusy} onClick={() => void chooseUpdate('close')}>Update on Close</button>
+        <button type="button" disabled={updateBusy} onClick={() => void chooseUpdate('ignore')}>Ignore</button>
+        <button type="button" disabled={updateBusy} onClick={() => void chooseUpdate('skip')}>Ignore &amp; Skip Version</button>
+      </div><p className="update-dialog-note">Update on Close downloads and installs silently after the app closes. It won’t reopen the app.</p>
+    </DraggableDialog>}
     {dropTarget && <div className={'drop-overlay ' + (dropTarget === 'multiple' ? 'drop-multiple' : 'drop-single')} aria-hidden="true">
       {dropTarget === 'multiple' ? <span>Drop files or folders to compare</span> : <><div className={'drop-half ' + (dropTarget === 'left' ? 'active' : '')}>Original</div><div className={'drop-half ' + (dropTarget === 'right' ? 'active' : '')}>Changed</div></>}
     </div>}
