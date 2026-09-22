@@ -60,9 +60,10 @@ fn update_manifest() -> Result<Value, String> {
     response.body_mut().as_reader().take(131_072).read_to_string(&mut body).map_err(|e| e.to_string())?;
     let release: Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
     let tag = string(&release, "tag_name");
-    let commit = tag.strip_prefix("commit-").ok_or("Invalid update release tag.")?;
-    if commit.len() != 40 || !commit.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return Err("Invalid update release tag.".into());
+    let commit = string(&release, "target_commitish");
+    if tag.is_empty() || tag.len() > 255 || !tag.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+        || commit.len() != 40 || !commit.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err("Invalid update release metadata.".into());
     }
     let installer = release["assets"].as_array().ok_or("Update release has no assets.")?
         .iter().find(|asset| string(asset, "name") == "Installer.exe")

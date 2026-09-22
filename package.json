@@ -1,6 +1,6 @@
 {
   "name": "norways-diff-checker",
-  "version": "0.2.0",
+  "version": "0.1.0",
   "author": "Norway174",
   "scripts": {
     "start": "tauri dev",

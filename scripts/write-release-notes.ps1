@@ -12,7 +12,9 @@ if ($Repository -notmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' -or $HeadCommit -n
 
 $range = $HeadCommit
 if ($PreviousTag) {
-    if ($PreviousTag -notmatch '^commit-[0-9a-f]{40}$') { throw 'Invalid previous release tag.' }
+    if ($PreviousTag -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$') { throw 'Invalid previous release tag.' }
+    git check-ref-format "refs/tags/$PreviousTag" | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'Invalid previous release tag.' }
     git rev-parse --verify "$PreviousTag^{commit}" | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'Previous release tag is missing from the checkout.' }
     git merge-base --is-ancestor $PreviousTag $HeadCommit

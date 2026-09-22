@@ -20,18 +20,30 @@ jobs:
         with:
           persist-credentials: true
           fetch-depth: 0
+      - name: Check package version against releases
+        id: release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          & 'scripts/check-release-version.ps1' -Repository 'Norway174/Norways-Diff-Checker' -OutputPath $env:GITHUB_OUTPUT
       - uses: actions/setup-node@v4
+        if: steps.release.outputs.publish == 'true'
         with:
           node-version: '22'
           cache: npm
       - uses: dtolnay/rust-toolchain@stable
+        if: steps.release.outputs.publish == 'true'
       - uses: Swatinem/rust-cache@v2
+        if: steps.release.outputs.publish == 'true'
         with:
           workspaces: src-tauri
       - name: Install NSIS
+        if: steps.release.outputs.publish == 'true'
         shell: pwsh
         run: choco install nsis --no-progress -y
       - name: Build portable app
+        if: steps.release.outputs.publish == 'true'
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -43,14 +55,18 @@ jobs:
           npm run build:portable
           if ($LASTEXITCODE -ne 0) { throw 'Portable build failed' }
       - name: Package and publish
+        if: steps.release.outputs.publish == 'true'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          PREVIOUS_RELEASE_TAG: ${{ steps.release.outputs.previous_tag }}
         run: |
           $ErrorActionPreference = 'Stop'
           $commit = $env:GITHUB_SHA.ToLowerInvariant()
           $repo = 'Norway174/Norways-Diff-Checker'
-          $tag = "commit-$commit"
+          $tag = $env:RELEASE_TAG
+          $version = (Get-Content 'package.json' -Raw | ConvertFrom-Json).version
           $work = Join-Path $env:RUNNER_TEMP 'ndc-publish'
           $portable = Join-Path $work 'portable'
           New-Item -ItemType Directory -Path (Join-Path $portable 'licenses') -Force | Out-Null
@@ -68,10 +84,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'NSIS installer build failed' }
           $head = ((git ls-remote origin refs/heads/main) -split '\s+')[0]
           if ($LASTEXITCODE -ne 0 -or $head -ne $commit) { Write-Host 'A newer source commit exists; skipping this publication.'; exit 0 }
-          $previousTag = gh release view --repo $repo --json tagName --jq '.tagName' 2>$null
-          if ($LASTEXITCODE -ne 0) { $previousTag = '' }
           $notes = Join-Path $work 'release-notes.md'
-          & 'scripts/write-release-notes.ps1' -Repository $repo -HeadCommit $commit -PreviousTag $previousTag -OutputPath $notes
+          & 'scripts/write-release-notes.ps1' -Repository $repo -HeadCommit $commit -PreviousTag $env:PREVIOUS_RELEASE_TAG -OutputPath $notes
           if ($LASTEXITCODE -ne 0) { throw 'Could not generate release notes' }
-          gh release create $tag $zip $installer --repo $repo --target $commit --title "Build $($commit.Substring(0, 8))" --notes-file $notes --latest
+          gh release create $tag $zip $installer --repo $repo --target $commit --title $version --notes-file $notes --latest
           if ($LASTEXITCODE -ne 0) { throw 'Could not create GitHub Release' }
