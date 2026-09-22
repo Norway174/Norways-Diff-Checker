@@ -34,6 +34,14 @@ Page custom MaintenancePage MaintenanceLeave
 !define MUI_PAGE_CUSTOMFUNCTION_PRE DirectoryPre
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
+!define MUI_FINISHPAGE_RUN "$INSTDIR\norways-diff-checker.exe"
+!define MUI_FINISHPAGE_RUN_TEXT "Open Norways Diff Checker"
+!define MUI_FINISHPAGE_RUN_NOTCHECKED
+!define MUI_FINISHPAGE_SHOWREADME
+!define MUI_FINISHPAGE_SHOWREADME_TEXT "Create desktop shortcut"
+!define MUI_FINISHPAGE_SHOWREADME_FUNCTION CreateDesktopShortcut
+!define MUI_FINISHPAGE_SHOWREADME_NOTCHECKED
+!insertmacro MUI_PAGE_FINISH
 !insertmacro MUI_UNPAGE_CONFIRM
 !insertmacro MUI_UNPAGE_INSTFILES
 !insertmacro MUI_LANGUAGE "English"
@@ -141,9 +149,17 @@ Section "Install" MainSection
   WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\NorwaysDiffChecker" "NoModify" 1
   CreateDirectory "$SMPROGRAMS\Norways Diff Checker"
   CreateShortCut "$SMPROGRAMS\Norways Diff Checker\Norways Diff Checker.lnk" "$INSTDIR\norways-diff-checker.exe"
-  CreateShortCut "$DESKTOP\Norways Diff Checker.lnk" "$INSTDIR\norways-diff-checker.exe"
-  Exec '"$INSTDIR\norways-diff-checker.exe"'
+  IfSilent SilentUpdate InstallDone
+  SilentUpdate:
+    ${If} $Action == "update"
+      Exec '"$INSTDIR\norways-diff-checker.exe"'
+    ${EndIf}
+  InstallDone:
 SectionEnd
+
+Function CreateDesktopShortcut
+  CreateShortCut "$DESKTOP\Norways Diff Checker.lnk" "$INSTDIR\norways-diff-checker.exe"
+FunctionEnd
 
 Section "Uninstall"
   Delete "$DESKTOP\Norways Diff Checker.lnk"
