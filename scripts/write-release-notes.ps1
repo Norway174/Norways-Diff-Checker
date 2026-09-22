@@ -2,11 +2,12 @@ param(
     [Parameter(Mandatory)][string]$Repository,
     [Parameter(Mandatory)][string]$HeadCommit,
     [string]$PreviousTag,
+    [Parameter(Mandatory)][string]$AssetVersion,
     [Parameter(Mandatory)][string]$OutputPath
 )
 $ErrorActionPreference = 'Stop'
 
-if ($Repository -notmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' -or $HeadCommit -notmatch '^[0-9a-f]{40}$') {
+if ($Repository -notmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' -or $HeadCommit -notmatch '^[0-9a-f]{40}$' -or $AssetVersion -notmatch '^[A-Za-z0-9._-]+$') {
     throw 'Invalid repository or commit.'
 }
 
@@ -26,8 +27,7 @@ $commits = @(git log --reverse --format=%H $range)
 if ($LASTEXITCODE -ne 0 -or $commits.Count -eq 0) { throw 'No commits found for release notes.' }
 
 $lines = [System.Collections.Generic.List[string]]::new()
-$version = (Get-Content 'package.json' -Raw | ConvertFrom-Json).version
-$lines.Add("Download **NorwaysDiffChecker $version Installer.exe** to install, update, repair, or uninstall the app. The installer includes the app and works offline. **NorwaysDiffChecker $version Portable.zip** contains the standalone app.")
+$lines.Add("Download **NorwaysDiffChecker-$AssetVersion-Installer.exe** to install, update, repair, or uninstall the app. The installer includes the app and works offline. **NorwaysDiffChecker-$AssetVersion-Portable.zip** contains the standalone app.")
 $lines.Add('')
 $lines.Add('### Commits')
 $lines.Add('')

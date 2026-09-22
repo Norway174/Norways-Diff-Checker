@@ -73,14 +73,16 @@ fn update_manifest() -> Result<Value, String> {
         || commit.len() != 40 || !commit.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err("Invalid update release metadata.".into());
     }
+    let asset_version = if tag == format!("v{version}") { version } else { tag };
+    let installer_name = format!("NorwaysDiffChecker-{asset_version}-Installer.exe");
     let installer = release["assets"].as_array().ok_or("Update release has no assets.")?
-        .iter().find(|asset| string(asset, "name") == "Installer.exe")
+        .iter().find(|asset| string(asset, "name") == installer_name)
         .ok_or("Update release has no installer.")?;
     let url = string(installer, "browser_download_url");
     let digest = string(installer, "digest");
     let hash = digest.strip_prefix("sha256:").ok_or("Update installer has no SHA-256 digest.")?;
     if hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit())
-        || url != format!("https://github.com/Norway174/Norways-Diff-Checker/releases/download/{tag}/Installer.exe") {
+        || url != format!("https://github.com/Norway174/Norways-Diff-Checker/releases/download/{tag}/{installer_name}") {
         return Err("Invalid update installer asset.".into());
     }
     Ok(json!({"version":version,"commit":commit,"installerUrl":url,"installerSha256":hash}))

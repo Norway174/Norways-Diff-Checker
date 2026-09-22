@@ -67,6 +67,7 @@ jobs:
           $repo = 'Norway174/Norways-Diff-Checker'
           $tag = $env:RELEASE_TAG
           $version = (Get-Content 'package.json' -Raw | ConvertFrom-Json).version
+          $assetVersion = if ($tag -ceq "v$version") { $version } else { $tag }
           $work = Join-Path $env:RUNNER_TEMP 'ndc-publish'
           $portable = Join-Path $work 'portable'
           New-Item -ItemType Directory -Path (Join-Path $portable 'licenses') -Force | Out-Null
@@ -74,18 +75,18 @@ jobs:
           Copy-Item 'src-tauri/binaries/PDFIUM-LICENSE' (Join-Path $portable 'licenses/PDFIUM-LICENSE')
           Copy-Item 'src-tauri/models/LICENSE.md' (Join-Path $portable 'licenses/OCR-LICENSE.md')
           [IO.File]::WriteAllText((Join-Path $portable 'portable.flag'), "portable`n")
-          $zip = Join-Path $work 'Portable.zip'
+          $zip = Join-Path $work "NorwaysDiffChecker-$assetVersion-Portable.zip"
           Compress-Archive -Path (Join-Path $portable '*') -DestinationPath $zip -CompressionLevel Optimal
           $nsis = Get-Command makensis.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -First 1
           if (!$nsis) { $nsis = 'C:\Program Files (x86)\NSIS\makensis.exe' }
           if (!(Test-Path -LiteralPath $nsis)) { throw 'NSIS compiler not found' }
-          $installer = Join-Path $work 'Installer.exe'
+          $installer = Join-Path $work "NorwaysDiffChecker-$assetVersion-Installer.exe"
           & $nsis "/DAPP_COMMIT=$commit" "/DAPP_VERSION=$version" "/DPORTABLE_DIR=$portable" "/DOUTPUT=$installer" 'installer/Installer.nsi'
           if ($LASTEXITCODE -ne 0) { throw 'NSIS installer build failed' }
           $head = ((git ls-remote origin refs/heads/main) -split '\s+')[0]
           if ($LASTEXITCODE -ne 0 -or $head -ne $commit) { Write-Host 'A newer source commit exists; skipping this publication.'; exit 0 }
           $notes = Join-Path $work 'release-notes.md'
-          & 'scripts/write-release-notes.ps1' -Repository $repo -HeadCommit $commit -PreviousTag $env:PREVIOUS_RELEASE_TAG -OutputPath $notes
+          & 'scripts/write-release-notes.ps1' -Repository $repo -HeadCommit $commit -PreviousTag $env:PREVIOUS_RELEASE_TAG -AssetVersion $assetVersion -OutputPath $notes
           if ($LASTEXITCODE -ne 0) { throw 'Could not generate release notes' }
-          gh release create $tag "$zip#NorwaysDiffChecker $version Portable.zip" "$installer#NorwaysDiffChecker $version Installer.exe" --repo $repo --target $commit --title $version --notes-file $notes --latest
+          gh release create $tag $zip $installer --repo $repo --target $commit --title $version --notes-file $notes --latest
           if ($LASTEXITCODE -ne 0) { throw 'Could not create GitHub Release' }
