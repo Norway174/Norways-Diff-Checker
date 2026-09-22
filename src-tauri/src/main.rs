@@ -541,13 +541,113 @@ fn describe_one(path: &Path) -> Result<Value, String> {
         "path": absolute.to_string_lossy(), "size": stat.len(), "types": types}),
     )
 }
+const MIB: u64 = 1024 * 1024;
+const LIBREOFFICE_VERSION: &str = "26.2.6";
+const LIBREOFFICE_DOWNLOAD_BYTES: u64 = 373252096;
+const LIBREOFFICE_INSTALLED_BYTES: u64 = 1596766810;
+
 fn show_status(root: &Path) -> Value {
     let installed = root
         .join("dependencies/libreoffice/program/soffice.exe")
         .exists();
-    json!({"installed": installed, "version": "26.2.6", "downloadBytes": 373252096u64,
-        "installedBytes": if installed {1596766810u64} else {0}, "installedBytesEstimate": 1596766810u64})
+    json!({"installed": installed, "version": LIBREOFFICE_VERSION, "downloadBytes": LIBREOFFICE_DOWNLOAD_BYTES,
+        "installedBytes": if installed {LIBREOFFICE_INSTALLED_BYTES} else {0}, "installedBytesEstimate": LIBREOFFICE_INSTALLED_BYTES})
 }
+
+fn cached_bytes(cache: &Path, files: &[(&str, u64)]) -> u64 {
+    files
+        .iter()
+        .filter_map(|(name, expected)| {
+            fs::metadata(cache.join(name))
+                .ok()
+                .filter(|metadata| metadata.is_file() && metadata.len() == *expected)
+                .map(|_| *expected)
+        })
+        .sum()
+}
+
+fn readable_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 4] = ["B", "KB", "MB", "GB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    let precision = if value >= 100.0 || unit == 0 { 0 } else { 1 };
+    format!("{value:.precision$} {}", UNITS[unit])
+}
+
+fn disk_space_error(label: &str, required: u64, available: u64) -> String {
+    let shortfall = required.saturating_sub(available);
+    format!(
+        "Not enough disk space to install {label}. About {} is required (including temporary files), but only {} is available. Free at least {} and try again.",
+        readable_bytes(required),
+        readable_bytes(available),
+        readable_bytes(shortfall)
+    )
+}
+
+#[cfg(windows)]
+fn available_disk_space(path: &Path) -> Result<u64, String> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
+
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    let mut available = 0u64;
+    let result = unsafe {
+        GetDiskFreeSpaceExW(
+            wide.as_ptr(),
+            &mut available,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+    if result == 0 {
+        Err(format!(
+            "Unable to check free disk space: {}",
+            std::io::Error::last_os_error()
+        ))
+    } else {
+        Ok(available)
+    }
+}
+
+#[cfg(not(windows))]
+fn available_disk_space(_path: &Path) -> Result<u64, String> {
+    Ok(u64::MAX)
+}
+
+fn ensure_install_space(root: &Path, label: &str, required: u64) -> Result<(), String> {
+    let available = available_disk_space(root)?;
+    if available < required {
+        Err(disk_space_error(label, required, available))
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod disk_space_tests {
+    use super::*;
+
+    #[test]
+    fn storage_sizes_are_readable() {
+        assert_eq!(readable_bytes(0), "0 B");
+        assert_eq!(readable_bytes(1536), "1.5 KB");
+        assert_eq!(readable_bytes(1596766810), "1.5 GB");
+    }
+
+    #[test]
+    fn storage_error_explains_required_available_and_shortfall() {
+        let error = disk_space_error("LibreOffice", 2 * 1024 * MIB, 1536 * MIB);
+        assert_eq!(
+            error,
+            "Not enough disk space to install LibreOffice. About 2.0 GB is required (including temporary files), but only 1.5 GB is available. Free at least 512 MB and try again."
+        );
+    }
+}
+
 const PDFIUM_HASH: &str = "79d4676b656cfb1abcea88f9ade3b4b0826c5200382db5f4ec72a636c598c118";
 const PDFIUM_ARCHIVE_HASH: &str =
     "73cc0de638ac2095e7445bf56a38200a5b7c7ca0e9f4ba144598f2457377ac08";
@@ -663,6 +763,30 @@ fn install_optional(root: &Path, window: &WebviewWindow, kind: &str) -> Result<V
     if staging.exists() {
         fs::remove_dir_all(&staging).map_err(|e| e.to_string())?;
     }
+    let cache = root.join("dependencies/downloads");
+    let (label, downloads, installed_bytes) = match kind {
+        "pdfium" => (
+            "PDFium",
+            vec![("pdfium-win-x64-7881.tgz", 3733154u64)],
+            7211520u64,
+        ),
+        "ocr" => (
+            "OCR models",
+            vec![
+                ("text-detection.rten", 2510284u64),
+                ("text-recognition.rten", 9716568u64),
+            ],
+            12226852u64,
+        ),
+        _ => return Err("Unknown optional dependency.".into()),
+    };
+    emit_optional_progress(window, kind, "Checking storage", 0, 1);
+    let download_bytes: u64 = downloads.iter().map(|(_, size)| *size).sum();
+    let required = download_bytes
+        .saturating_sub(cached_bytes(&cache, &downloads))
+        .saturating_add(installed_bytes)
+        .saturating_add(64 * MIB);
+    ensure_install_space(root, label, required)?;
     fs::create_dir_all(&staging).map_err(|e| e.to_string())?;
     let result = (|| -> Result<(), String> {
         match kind {
@@ -727,14 +851,31 @@ fn install_optional(root: &Path, window: &WebviewWindow, kind: &str) -> Result<V
     optional_status(root, kind)
 }
 fn install_libreoffice(root: &Path, window: &WebviewWindow) -> Result<Value, String> {
-    const VERSION: &str = "26.2.6";
     const HASH: &str = "f9877032fd908beb9c0ddf06df4af5c2e85f419c42e14876c4cce5aae5fb2660";
     let cache = root.join("dependencies/downloads");
     let install = root.join("dependencies/libreoffice");
+    let staging = root.join("dependencies/libreoffice.installing");
     fs::create_dir_all(&cache).map_err(|e| e.to_string())?;
-    let msi = cache.join(format!("LibreOffice_{VERSION}_Win_x86-64.msi"));
+    if staging.exists() {
+        fs::remove_dir_all(&staging).map_err(|e| e.to_string())?;
+    }
+    let msi_name = format!("LibreOffice_{LIBREOFFICE_VERSION}_Win_x86-64.msi");
+    let msi = cache.join(&msi_name);
+    let _ = window.emit(
+        "libreoffice-progress",
+        json!({"phase":"Checking storage","receivedBytes":0,"totalBytes":1,"percent":0}),
+    );
+    let cached = cached_bytes(&cache, &[(msi_name.as_str(), LIBREOFFICE_DOWNLOAD_BYTES)]);
+    ensure_install_space(
+        root,
+        "LibreOffice",
+        LIBREOFFICE_DOWNLOAD_BYTES
+            .saturating_sub(cached)
+            .saturating_add(LIBREOFFICE_INSTALLED_BYTES)
+            .saturating_add(256 * MIB),
+    )?;
     let download = || -> Result<(), String> {
-        let url=format!("https://download.documentfoundation.org/libreoffice/stable/{VERSION}/win/x86_64/LibreOffice_{VERSION}_Win_x86-64.msi");
+        let url=format!("https://download.documentfoundation.org/libreoffice/stable/{LIBREOFFICE_VERSION}/win/x86_64/{msi_name}");
         let mut response = ureq::get(&url).call().map_err(|e| e.to_string())?;
         let total = response
             .headers()
@@ -780,10 +921,11 @@ fn install_libreoffice(root: &Path, window: &WebviewWindow) -> Result<Value, Str
         let _ = fs::remove_file(&msi);
         return Err("LibreOffice download failed SHA-256 verification.".into());
     }
-    let staging = root.join("dependencies/libreoffice.installing");
-    if staging.exists() {
-        fs::remove_dir_all(&staging).map_err(|e| e.to_string())?;
-    }
+    ensure_install_space(
+        root,
+        "LibreOffice",
+        LIBREOFFICE_INSTALLED_BYTES.saturating_add(256 * MIB),
+    )?;
     fs::create_dir_all(&staging).map_err(|e| e.to_string())?;
     let _ = window.emit(
         "libreoffice-progress",
@@ -797,7 +939,22 @@ fn install_libreoffice(root: &Path, window: &WebviewWindow) -> Result<Value, Str
         .status()
         .map_err(|e| e.to_string())?;
     if !result.success() {
-        return Err(format!("LibreOffice extraction failed ({result})."));
+        let code = result.code().unwrap_or_default();
+        let disk_error = ensure_install_space(
+            root,
+            "LibreOffice",
+            LIBREOFFICE_INSTALLED_BYTES.saturating_add(256 * MIB),
+        )
+        .err();
+        let _ = fs::remove_dir_all(&staging);
+        if let Some(error) = disk_error {
+            return Err(error);
+        }
+        return Err(if code == 1619 {
+            "Windows Installer could not open the verified LibreOffice package. Restart Windows and try again. If the problem continues, delete the cached download from the app data folder and retry. (exit code 1619)".into()
+        } else {
+            format!("Windows Installer could not extract LibreOffice (exit code {code}). Restart Windows and try again.")
+        });
     }
     if !staging.join("program/soffice.exe").exists() {
         return Err("LibreOffice extraction completed without soffice.exe.".into());
@@ -808,7 +965,7 @@ fn install_libreoffice(root: &Path, window: &WebviewWindow) -> Result<Value, Str
     fs::rename(staging, &install).map_err(|e| e.to_string())?;
     let _=window.emit("libreoffice-progress",json!({"phase":"Installing","receivedBytes":1596766810u64,"totalBytes":1596766810u64,"percent":100}));
     Ok(
-        json!({"installed":true,"version":VERSION,"downloadBytes":373252096u64,"installedBytes":1596766810u64,"installedBytesEstimate":1596766810u64}),
+        json!({"installed":true,"version":LIBREOFFICE_VERSION,"downloadBytes":LIBREOFFICE_DOWNLOAD_BYTES,"installedBytes":LIBREOFFICE_INSTALLED_BYTES,"installedBytesEstimate":LIBREOFFICE_INSTALLED_BYTES}),
     )
 }
 fn registry(args: &[&str]) -> bool {
